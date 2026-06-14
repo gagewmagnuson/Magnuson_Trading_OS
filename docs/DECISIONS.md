@@ -173,6 +173,153 @@ Rationale: Single-developer bandwidth. Equities + macro is sufficient
 to build and validate multiple systematic models. Expanding scope before
 the core is validated wastes time and creates maintenance surface.
 
+## DEC-009 — Concept dictionary architecture
+**Date:** 2026-06  
+**Status:** Frozen
+
+The `fund.concept` / `fund.concept_alias` tables are a governance artifact,
+not a code artifact. Claude Code may implement the schema and connector
+plumbing. Claude Code may NOT write mapping data (concept rows or alias rows)
+without an explicit human review step.
+
+### Canonical vocabulary: 20 core concepts
+
+Intentionally minimal. Accuracy over breadth — 20 concepts at 99% confidence
+beats 500 at 80%. All 20 ship with `research_status = 'core'`.
+
+**Income Statement:** revenue, cost_of_revenue, gross_profit, operating_income,
+net_income, eps_basic, eps_diluted, shares_basic, shares_diluted
+
+**Balance Sheet:** total_assets, total_liabilities, total_equity,
+cash_and_equivalents, total_debt, goodwill
+
+**Cash Flow:** cfo, capex, cff
+
+**Computed on read (no XBRL mapping):** ebitda (operating_income + D&A),
+fcf (cfo + capex)
+
+### research_status on every concept
+
+| Status | Meaning |
+|---|---|
+| core | Fully reviewed, high-confidence mapping, used in production |
+| experimental | Under review, mapping tentative, not yet trusted |
+| deprecated | No longer used; retained for historical query compatibility |
+| custom | Company-specific extension, not a standard XBRL concept |
+
+New concepts ship as `experimental` until promoted via a DECISIONS.md
+amendment. Models and agents filter to `core` by default.
+
+### Tag mapping strategy
+
+Each concept has a priority-ordered list of acceptable us-gaap tags in
+`fund.concept_alias` (lower `priority` = higher precedence). The EDGAR
+connector walks the list and takes the first tag present in the filing.
+Initial priority lists are populated only after human review — never
+auto-generated.
+
+### Custom / extension tag handling
+
+Tags not in `fund.concept_alias` are NEVER discarded. They are written to
+`fund.unmapped_tag` with full context, reviewed periodically, and promoted
+to `concept_alias` via a DECISIONS.md amendment. This makes the dictionary
+a compounding asset.
+
+### Restatements
+
+Restatements do not affect mappings. A restated filing is a new `fund.filing`
+row with a later `filed_at`; the same mappings apply to both, and
+`fund.fundamentals_asof()` selects the correct version via `knowledge_time`.
+
+### Adding new concepts
+
+Propose in chat → record in DECISIONS.md → add to `fund.concept` as
+`experimental` → add mappings → add a lookahead-bias test → promote to `core`
+after validation. Existing queries are never affected.
+
+### What Claude Code MAY and MAY NOT do
+
+**MAY:** implement schema changes, EDGAR connector plumbing (parsing, storage,
+batch rows), unmapped_tag logging, `*_asof()` queries.
+
+**MAY NOT:** write rows into `fund.concept` or `fund.concept_alias` without
+review, decide tag→concept mappings autonomously, or mark any concept as
+`core` without approval.
+
+## DEC-010 — Concept seed mappings and scope decisions
+**Date:** 2026-06  
+**Status:** Frozen
+
+Records the human-reviewed mapping decisions in `003_concept_seed.sql`.
+The seed is a governance artifact; these are the judgment calls behind it.
+
+### V0 vocabulary: 24 concepts
+
+**21 directly-mapped, reported (research_status = core):** revenue,
+cost_of_revenue, gross_profit, operating_income, net_income,
+depreciation_amortization, eps_basic, eps_diluted, shares_basic,
+shares_diluted, total_assets, total_liabilities, total_equity,
+cash_and_equivalents, goodwill, debt_current, debt_noncurrent,
+operating_lease_liability, finance_lease_liability, cfo, capex, cff.
+
+**3 computed-on-read (core, NO XBRL aliases):**
+- total_debt = debt_current + debt_noncurrent (leases excluded by default)
+- ebitda = operating_income + depreciation_amortization
+- fcf = cfo + capex (capex stored negative)
+
+### Mapping confidence
+
+`fund.concept_alias.mapping_confidence` (HIGH/MEDIUM/LOW) is populated for
+every alias. The connector may quarantine LOW-confidence values; none ship
+LOW in V0. Confidence is for audit: it records whether a mapping was obvious
+or a judgment call.
+
+### Specific decisions
+
+**Debt as components, not total.** total_debt is computed, never mapped.
+The reported components debt_current and debt_noncurrent are stored as
+source truth. Storing a single "total debt" tag would be an interpretation
+and would discard the maturity profile future models need.
+
+**Leases stored separately from debt, and total-tag only.**
+operating_lease_liability and finance_lease_liability are distinct reported
+concepts (institutional investors disagree on whether leases are debt, so
+the OS does not pre-decide). Each maps ONLY its total us-gaap tag. Component
+tags (…Current / …Noncurrent) are deliberately omitted: mixing a total tag
+with component tags risks storing a partial liability as if it were whole.
+Companies reporting only components will show NULL lease liability, and the
+components surface in fund.unmapped_tag for future review. Current/noncurrent
+lease concepts may be added later as experimental.
+
+**depreciation_amortization basis.** Defaults to the cash-flow add-back tag
+(DepreciationDepletionAndAmortization), which is the economically correct
+add-back for EBITDA. The income-statement tag (DepreciationAndAmortization)
+is a MEDIUM fallback that can exclude D&A embedded in COGS.
+
+**net_income = attributable to parent.** Maps NetIncomeLoss first; ProfitLoss
+(includes noncontrolling interests) is a MEDIUM fallback. Per-share and
+equity-holder analysis expects parent-only.
+
+**total_equity = attributable to parent.** Maps StockholdersEquity only. The
+NCI-inclusive tag is deliberately NOT mapped. Valuation factors (P/B, ROE,
+residual income) conventionally use parent-only equity.
+
+**cash_and_equivalents excludes restricted cash.** Maps
+CashAndCashEquivalentsAtCarryingValue only; the restricted-cash-inclusive
+tag is deliberately NOT mapped (different economic scope).
+
+**gross_profit and operating_income: direct disclosure only.** Mapped to
+their direct tags. When a company does not report them directly, they are
+left MISSING rather than derived. Models may compute fallbacks downstream.
+
+**revenue: modern-taxonomy-first.** ASC 606 tag ranked first, with
+pre-606/deprecated tags as lower-priority fallbacks. A pre-2018 filing may
+resolve to a lower-priority tag; this is intended.
+
+### Open item
+
+ebitda is now computable. No further D&A work required for V0. The
+current/noncurrent lease split remains a future expansion, not a V0 gap.
 
 Amendment log
 
