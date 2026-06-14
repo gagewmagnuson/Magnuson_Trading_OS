@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+.venv/
+
+# Data — never commit raw data or Parquet files
+lake/
+*.parquet
+*.csv
+
+# Database
+*.db
+*.duckdb
+
+# Secrets
+.env
+*.key
+config/secrets.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/settings.json
