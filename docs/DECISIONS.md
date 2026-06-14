@@ -253,9 +253,9 @@ review, decide tag→concept mappings autonomously, or mark any concept as
 Records the human-reviewed mapping decisions in `003_concept_seed.sql`.
 The seed is a governance artifact; these are the judgment calls behind it.
 
-### V0 vocabulary: 24 concepts
+### V0 vocabulary: 25 concepts
 
-**21 directly-mapped, reported (research_status = core):** revenue,
+**22 directly-mapped, reported (research_status = core):** revenue,
 cost_of_revenue, gross_profit, operating_income, net_income,
 depreciation_amortization, eps_basic, eps_diluted, shares_basic,
 shares_diluted, total_assets, total_liabilities, total_equity,

@@ -270,7 +270,7 @@ $$;
 -- ---------------------------------------------------------------------
 insert into meta.schema_migration(version, description)
 values ('v0.3.0',
-        'Concept seed: mapping_confidence column; EDGAR source; 24 V0 concepts (21 reported core incl. depreciation_amortization, 3 computed) and priority-ordered us-gaap aliases.')
+        'Concept seed: mapping_confidence column; EDGAR source; 25 V0 concepts (22 reported core incl. depreciation_amortization, 3 computed) and priority-ordered us-gaap aliases.')
 on conflict (version) do nothing;
 
 commit;
