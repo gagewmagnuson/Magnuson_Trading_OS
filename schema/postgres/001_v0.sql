@@ -1,6 +1,6 @@
 -- =====================================================================
 -- Trading OS — V0 Schema (PostgreSQL 15+)
--- Repo path suggestion: /schema/postgres/001_trading_os_v0.sql
+-- Repo path: /schema/postgres/001_v0.sql
 --
 -- GOVERNING PRINCIPLE (do not violate without amending DECISIONS.md):
 --   Fact tables are APPEND-ONLY and BITEMPORAL.
@@ -280,26 +280,37 @@ comment on table macro.observation is 'Bitemporal macro. Multiple rows per (seri
 -- =====================================================================
 
 -- Canonical concept dictionary: normalizes vendor/XBRL tags to one vocabulary.
+-- period_type is DERIVED, not stored: a concept is a flow when its facts carry
+-- a period_start, and an instant (balance-sheet) when they do not. See DEC-009.
 create table fund.concept (
     concept_id        bigint generated always as identity primary key,
     canonical_name    text not null unique,            -- 'revenue','net_income','total_assets'
     statement         text not null check (statement in ('income','balance','cashflow','other')),
     description       text,
     research_status   text not null default 'experimental'
-                       check (research_status in ('core','experimental','deprecated','custom'))
+                       check (research_status in ('core','experimental','deprecated','custom')),
+    expected_unit     text                             -- 'USD','USD/shares','shares'; NULL = no unit constraint
 );
 comment on column fund.concept.research_status is
     'Governance status. Models filter to core by default. New concepts start experimental; promote via DECISIONS.md amendment.';
+comment on column fund.concept.expected_unit is
+    'Expected unit for this concept (USD, USD/shares, shares). Connector rejects facts whose reported unit does not match. NULL = no unit constraint.';
 
 -- Maps raw source tags (e.g. us-gaap:Revenues) to a canonical concept.
+-- priority: lower = higher precedence. Connector walks aliases in priority
+-- order and takes the first tag present in the filing (DEC-009).
+-- NOTE: these aliases are Company-Facts-API-shaped (taxonomy + tag). A future
+-- raw-XBRL path (V2/V3) gets its own alias rows discriminated by source_id.
 create table fund.concept_alias (
-    alias_id      bigint generated always as identity primary key,
-    concept_id    bigint not null references fund.concept(concept_id),
-    source_id     bigint not null references ref.data_source(source_id),
-    source_tag    text not null,
-    priority      int not null default 100,    -- ← add this line
+    alias_id          bigint generated always as identity primary key,
+    concept_id        bigint not null references fund.concept(concept_id),
+    source_id         bigint not null references ref.data_source(source_id),
+    source_tag        text not null,
+    priority          int not null default 100,        -- lower = higher precedence
     unique (source_id, source_tag)
 );
+comment on column fund.concept_alias.priority is
+    'Tag resolution order within a concept. Lower number = higher priority. Connector takes first matching tag in priority order.';
 
 -- One row per filing. filed_at (acceptance timestamp) is the knowledge_time
 -- driver for every fact in the filing — NOT the period end date.
@@ -318,25 +329,53 @@ create table fund.filing (
 );
 create index fund_filing_secid_idx on fund.filing (security_id, period_end_date);
 
+-- Unknown XBRL tags from EDGAR filings. NEVER discarded. Reviewed periodically;
+-- promoted to concept_alias via governance amendment (DEC-009).
 create table fund.unmapped_tag (
-    unmapped_id   bigint generated always as identity primary key,
-    filing_id     bigint not null references fund.filing(filing_id),
-    tag           text not null,
-    value         numeric,
-    unit          text,
-    context_ref   text,
-    logged_at     timestamptz not null default now()
+    unmapped_id       bigint generated always as identity primary key,
+    filing_id         bigint not null references fund.filing(filing_id),
+    tag               text not null,
+    value             numeric,
+    unit              text,
+    context_ref       text,                            -- XBRL contextRef attribute
+    logged_at         timestamptz not null default now()
 );
 create index unmapped_tag_filing_idx on fund.unmapped_tag(filing_id);
 create index unmapped_tag_tag_idx    on fund.unmapped_tag(tag);
 
+-- Rule #4 (DEC-009): when a filing reports TWO valid, mapped tags for the same
+-- concept/period and they materially disagree, do NOT guess. Log the conflict,
+-- skip the fact, continue ingest. This audit trail is what makes the OS
+-- institution-grade: a strange model result years from now can be traced here.
+create table fund.concept_conflict (
+    conflict_id       bigint generated always as identity primary key,
+    filing_id         bigint not null references fund.filing(filing_id),
+    concept_id        bigint not null references fund.concept(concept_id),
+    period_start      date,
+    period_end_date   date not null,
+    tag_a             text not null,
+    value_a           numeric,
+    tag_b             text not null,
+    value_b           numeric,
+    unit              text,
+    logged_at         timestamptz not null default now()
+);
+create index concept_conflict_filing_idx  on fund.concept_conflict(filing_id);
+create index concept_conflict_concept_idx on fund.concept_conflict(concept_id);
+comment on table fund.concept_conflict is
+    'Two valid mapped tags for one concept/period that materially disagree. Logged, not resolved. Connector skips the fact and continues. Reviewed via governance.';
+
 -- The facts. Restatements arrive as NEW rows tied to a later filing
 -- (later filed_at). Never overwrite a prior reported value.
+-- period_start distinguishes flows from instants and is part of a flow fact's
+-- identity: a 3-month and a 12-month revenue for the same period_end are
+-- DIFFERENT facts, stored side by side, never derived from one another (DEC-009).
 create table fund.fundamental_fact (
     fact_id           bigint generated always as identity primary key,
     security_id       bigint not null references sec.security(security_id),
     filing_id         bigint not null references fund.filing(filing_id),
     concept_id        bigint not null references fund.concept(concept_id),
+    period_start      date,                            -- NULL = instant (balance sheet); NOT NULL = flow (income/cash flow). Duration = identity of a flow fact.
     period_end_date   date not null,                   -- event-time (denormalized from filing for fast as-of)
     fiscal_period     text,
     value             numeric,                         -- numeric, never float
@@ -345,9 +384,11 @@ create table fund.fundamental_fact (
     is_restatement    boolean not null default false,
     batch_id          bigint references meta.ingest_batch(batch_id)
 );
--- The critical as-of index: per (security, period, concept), newest-known first.
+-- The critical as-of index: per (security, concept, period_end, period_start),
+-- newest-known first. period_start is in the key because duration is part of a
+-- flow fact's identity.
 create index fund_fact_asof_idx
-    on fund.fundamental_fact (security_id, concept_id, period_end_date, filed_at desc);
+    on fund.fundamental_fact (security_id, concept_id, period_end_date, period_start, filed_at desc);
 
 -- =====================================================================
 -- UNIV: universe / index membership (bitemporal)
@@ -393,22 +434,25 @@ returns bigint language sql stable as $$
 $$;
 
 -- Point-in-time fundamentals: latest value known on/before p_as_of,
--- per (security, concept, period).
+-- per (security, concept, period_end, period_start). period_start is in the
+-- key so a quarterly fact and an annual fact for the same period_end are
+-- returned as distinct rows rather than one shadowing the other.
 create or replace function fund.fundamentals_asof(p_as_of timestamptz)
 returns table (
     security_id     bigint,
     concept_id      bigint,
+    period_start    date,
     period_end_date date,
     fiscal_period   text,
     value           numeric,
     unit            text,
     filed_at        timestamptz
 ) language sql stable as $$
-    select distinct on (security_id, concept_id, period_end_date)
-           security_id, concept_id, period_end_date, fiscal_period, value, unit, filed_at
+    select distinct on (security_id, concept_id, period_end_date, period_start)
+           security_id, concept_id, period_start, period_end_date, fiscal_period, value, unit, filed_at
     from fund.fundamental_fact
     where filed_at <= p_as_of
-    order by security_id, concept_id, period_end_date, filed_at desc
+    order by security_id, concept_id, period_end_date, period_start, filed_at desc
 $$;
 
 -- Point-in-time macro: latest vintage on/before p_as_of, per (series, obs_date).
@@ -461,7 +505,7 @@ end;
 $$;
 
 insert into meta.schema_migration(version, description)
-values ('v0.1.0', 'Trading OS V0: bitemporal core, security master, corp actions, macro vintages, PIT fundamentals + concept dictionary (research_status, priority, unmapped_tag), catalog, universe.');
+values ('v0.1.0', 'Trading OS V0: bitemporal core, security master, corp actions, macro vintages, PIT fundamentals + concept dictionary (research_status, expected_unit, priority, period_start, unmapped_tag, concept_conflict), catalog, universe.');
 
 commit;
 
@@ -472,6 +516,9 @@ commit;
 --     reintroduce lookahead bias.
 --   * To "correct" data: INSERT a new row with a later knowledge_time. The
 --     append-only triggers will block any UPDATE/DELETE.
+--   * period_start is part of a flow fact's identity. NULL = instant (balance
+--     sheet); NOT NULL = flow. Never derive annual from quarters — store both
+--     as reported, each with its own [period_start, period_end_date].
 --   * Price bars do NOT live here — they live in the Parquet lake (see
 --     SCHEMA.md) with identical bitemporal columns, queried via DuckDB.
 -- =====================================================================
