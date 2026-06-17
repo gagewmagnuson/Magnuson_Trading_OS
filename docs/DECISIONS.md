@@ -326,3 +326,78 @@ Amendment log
 (Add entries here when a decision is changed, not by editing the original.)
 
 Date Decision amended Change Reason————
+
+## DEC-011 — Validation cohort before scaling
+**Date:** 2026-06  
+**Status:** Active
+
+The first EDGAR ingestion target is a fixed five-ticker cohort:
+AAPL, MSFT, GOOGL, AMZN, JPM. The connector enforces this in
+`config.VALIDATION_TICKERS`; the CLI refuses any ticker outside the set.
+
+Success criteria before scaling beyond the cohort:
+- Company Facts downloads to immutable bronze
+- Aliases resolve; mapped count is non-trivial
+- Units validate against expected_unit
+- No lookahead violations; fundamentals_asof() returns correct as-of values
+- Restatements stored as multiple bitemporal rows, not overwrites
+- Conflicts limited to genuine same-confidence / unresolved-hierarchy cases
+
+Scaling to the full market requires amending config.VALIDATION_TICKERS and
+recording the change here. JPM is intentionally included so a bank's tag
+profile (different from the tech names) is exercised during validation.
+
+**Rationale:** Validating ingestion correctness on five known issuers is far
+cheaper than discovering a systemic mapping or bitemporal bug after a
+market-wide run.
+
+---
+
+## DEC-012 — Bronze is immutable; parse from disk
+**Date:** 2026-06  
+**Status:** Frozen
+
+Raw SEC Company Facts responses are written to
+`lake/bronze/edgar/companyfacts/` exactly as received and are NEVER modified.
+The pipeline is: download to bronze → parse from disk → normalize → Postgres.
+
+A parser or mapping fix re-runs the parser against stored bronze; it does NOT
+re-download from SEC. Re-downloading is only for capturing genuinely new
+filings, and lands as a new dated bronze file (never an overwrite).
+
+**Rationale:** This is what makes the lake a true source-of-truth layer rather
+than a transient cache. If a mapping bug, taxonomy change, or parsing mistake
+is found later, the original source data is still on disk to replay. SEC
+Company Facts JSON is small; storage cost is effectively zero, and missing
+source truth is expensive.
+
+---
+
+## DEC-013 — Per-concept conflict policy (prefer_higher_confidence)
+**Date:** 2026-06  
+**Status:** Frozen
+
+When two DIFFERENT mapped tags for the same concept/period materially
+disagree WITHIN one filing, resolution depends on a per-concept flag,
+`fund.concept.prefer_higher_confidence`:
+
+- **true** — the unique highest-confidence tag wins silently; no conflict
+  logged. Used only where the priority ordering encodes a PROVEN economic
+  scope hierarchy. Initial set: debt_current, debt_noncurrent
+  (LongTermDebtNoncurrent is a proven subset of LongTermDebt).
+- **false** (default) — any material disagreement logs a
+  fund.concept_conflict and quarantines the value (missing > wrong).
+  Includes depreciation_amortization and both lease concepts, whose tag
+  relationships are not yet empirically confirmed as scope hierarchies.
+
+Same-confidence disagreement ALWAYS logs a conflict regardless of the flag:
+that is genuine ambiguity, not a resolved hierarchy.
+
+Cross-filing disagreement is NOT a conflict — it is a restatement, stored
+as multiple bitemporal rows distinguished by filed_at (knowledge_time) and
+resolved by fundamentals_asof(). Conflict detection operates only within a
+single accession.
+
+**Expansion rule:** a concept may be promoted to true only after observing
+its tag relationships across a broad sample and confirming a scope hierarchy.
+Record any promotion as a dated amendment here.
