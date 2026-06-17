@@ -401,3 +401,32 @@ single accession.
 **Expansion rule:** a concept may be promoted to true only after observing
 its tag relationships across a broad sample and confirming a scope hierarchy.
 Record any promotion as a dated amendment here.
+
+## DEC-014 — Flow concepts must be duration-filtered on read
+**Date:** 2026-06  
+**Status:** Frozen
+
+SEC Company Facts reports flow concepts (income-statement and cash-flow items)
+at MULTIPLE durations sharing the same period_end: the 3-month quarter, the
+6/9-month year-to-date cumulatives, and the 12-month annual all coexist. They
+are correctly stored as distinct facts, distinguished by period_start (which is
+part of a flow fact's identity, per DEC-009).
+
+Consequence for consumers: a query that selects a flow concept by period_end
+ALONE will return a mix of quarterly, YTD, and annual values and silently
+compute wrong results. Models MUST filter by duration.
+
+Canonical duration filter (period_end_date - period_start, in days):
+- Annual:    BETWEEN 350 AND 380
+- Quarterly: BETWEEN 85 AND 95
+
+Duration is computed from (period_end_date - period_start), NOT inferred from
+the fiscal_period label, which Company Facts populates inconsistently.
+
+Instant concepts (balance-sheet items) carry period_start = NULL and need no
+duration filter; their identity is period_end alone.
+
+This rule is enforced by the PIT test suite (tests/test_pit_fundamentals.py)
+and must be applied by every downstream factor/model query. The future serving
+API should expose duration (or period_type) as a first-class query parameter so
+consumers cannot accidentally mix durations.
