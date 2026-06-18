@@ -430,3 +430,30 @@ This rule is enforced by the PIT test suite (tests/test_pit_fundamentals.py)
 and must be applied by every downstream factor/model query. The future serving
 API should expose duration (or period_type) as a first-class query parameter so
 consumers cannot accidentally mix durations.
+
+## DEC-015 — Market-observed macro series are single-vintage
+**Date:** 2026-06  
+**Status:** Frozen
+
+Macro series fall into two natures under ONE canonical data model
+(macro.observation with obs_date + vintage_date):
+
+- **Revisable statistics** (GDP, CPI, PPI, unemployment, payrolls, housing,
+  credit spreads) get benchmark/seasonal revisions. The connector captures
+  FULL ALFRED vintage history; revisions are multiple rows distinguished by
+  vintage_date. This is the lookahead-bias protection of DEC-005.
+
+- **Non-revisable market series** (Treasury yields DGS3MO/DGS2/DGS10, the
+  T10Y2Y spread) are market observations. The value was known on the
+  observation date and is never restated, so there is exactly ONE vintage:
+  vintage_date = obs_date. These are fetched from plain FRED (no realtime
+  params); ALFRED has no meaningful revision history for them.
+
+The schema, the *_asof() logic, the API, and the PIT tests are IDENTICAL for
+both. The only difference is that one nature naturally has many vintages and
+the other has one. Consumers neither know nor care.
+
+The `revisable` flag lives in the connector's SERIES config. Classifying a new
+series is a governance act: market-quote/price-like series are non-revisable;
+estimated/surveyed/seasonally-adjusted statistics are revisable. Record the
+classification when adding a series.
