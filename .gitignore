@@ -25,4 +25,4 @@ config/secrets.yaml
 Thumbs.db
 
 # VS Code
-.vscode/settings.json
+.vscode/settings.json*.egg-info/
