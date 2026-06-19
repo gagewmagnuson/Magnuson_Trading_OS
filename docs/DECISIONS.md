@@ -457,3 +457,34 @@ The `revisable` flag lives in the connector's SERIES config. Classifying a new
 series is a governance act: market-quote/price-like series are non-revisable;
 estimated/surveyed/seasonally-adjusted statistics are revisable. Record the
 classification when adding a series.
+
+## DEC-016 — Corporate-action ingest is V1, not V0 (store is V0 and shipped)
+**Date:** 2026-06
+**Status:** Frozen
+
+Resolves an ambiguity created by the blueprint's "corporate-actions store +
+adjustment engine" V0 line, which bundles two separately-phased components:
+
+- The corporate-actions **store** — the `corp.corporate_action` table — is V0
+  and has shipped in `001_v0.sql`, protected by the no-mutation triggers.
+- Corporate-action **ingest** (populating splits + cash dividends) and the
+  **on-read adjustment function** are V1, exactly as ROADMAP.md already states.
+  They are NOT added to V0.
+
+A working conversation had drifted toward pulling a shrunk raw-event ingest into
+V0. That drift is explicitly rejected here. No ROADMAP amendment is required:
+the committed ROADMAP already places this work in V1, so this entry records the
+resolution and closes the drift in the audit trail rather than changing scope.
+
+Rationale: Corporate actions have no consumer in V0. Their purpose is on-read
+price adjustment, and there are no price bars until V1 (Alpaca free tier,
+DEC-007). Ingesting raw events in V0 would store data that cannot be validated
+against its actual use — adjustment factors and adjusted-price reconstruction —
+until V1. Building ingest + adjustment together in V1, alongside the bars they
+serve, lets the full chain (event → cumulative factor → adjusted price) be
+tested end-to-end in one PIT-correct slice.
+
+Consequence: V0 now closes with exactly two remaining deliverables —
+(6) trading-calendar population via `exchange_calendars` into
+`ref.trading_session`, and (7) the DuckDB cross-store PIT query proof. When both
+pass, the V0 gate in ROADMAP.md is met.
