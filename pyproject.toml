@@ -1,17 +1,13 @@
 # Trading OS — project metadata and PINNED dependencies.
 #
-# Reproducibility is a core principle (see VISION/DECISIONS): the exact package
-# versions the connectors were validated against are locked here, so the
-# environment can be rebuilt deterministically (e.g. after a machine failure or
-# when a second developer joins). Versions are pinned to what is currently
-# installed and validated, not floating ranges.
+# Reproducibility is a core principle: the exact package versions the connectors
+# and engine were validated against are locked here, so the environment can be
+# rebuilt deterministically. Versions are pinned to what is installed and
+# validated, not floating ranges.
 #
 # Install (from repo root, venv active):
 #     pip install -e .          # runtime deps
 #     pip install -e ".[dev]"   # runtime + test deps
-#
-# This also makes the package importable without PYTHONPATH=src once installed
-# editable, while PYTHONPATH=src continues to work unchanged.
 
 [project]
 name = "trading-os"
@@ -20,9 +16,10 @@ description = "Point-in-time-correct, API-first market-intelligence data layer f
 requires-python = ">=3.13"
 
 dependencies = [
-    "psycopg==3.3.4",            # PostgreSQL adapter (reference + facts store)
-    "exchange_calendars==4.13.2",# trading-session source of truth (calendars connector)
-    "python-dotenv==1.2.2",      # .env loading in config/settings.py
+    "psycopg==3.3.4",             # PostgreSQL adapter (reference + facts store)
+    "exchange_calendars==4.13.2", # trading-session source of truth (calendars connector)
+    "python-dotenv==1.2.2",       # .env loading in config/settings.py
+    "duckdb==1.5.4",              # analytical engine + postgres attach  # CONFIRM: pip show duckdb
 ]
 
 [project.optional-dependencies]
