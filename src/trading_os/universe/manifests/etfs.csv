@@ -1,0 +1,25 @@
+ticker,security_type,name
+SPY,ETF,SPDR S&P 500 ETF Trust
+VOO,ETF,Vanguard S&P 500 ETF
+IVV,ETF,iShares Core S&P 500 ETF
+QQQ,ETF,Invesco QQQ Trust
+IWM,ETF,iShares Russell 2000 ETF
+XLF,ETF,Financial Select Sector SPDR Fund
+XLK,ETF,Technology Select Sector SPDR Fund
+XLE,ETF,Energy Select Sector SPDR Fund
+XLV,ETF,Health Care Select Sector SPDR Fund
+XLI,ETF,Industrial Select Sector SPDR Fund
+XLP,ETF,Consumer Staples Select Sector SPDR Fund
+XLY,ETF,Consumer Discretionary Select Sector SPDR Fund
+XLU,ETF,Utilities Select Sector SPDR Fund
+XLB,ETF,Materials Select Sector SPDR Fund
+XLRE,ETF,Real Estate Select Sector SPDR Fund
+XLC,ETF,Communication Services Select Sector SPDR Fund
+SHY,ETF,iShares 1-3 Year Treasury Bond ETF
+IEF,ETF,iShares 7-10 Year Treasury Bond ETF
+TLT,ETF,iShares 20+ Year Treasury Bond ETF
+LQD,ETF,iShares iBoxx $ Investment Grade Corporate Bond ETF
+HYG,ETF,iShares iBoxx $ High Yield Corporate Bond ETF
+GLD,ETF,SPDR Gold Shares
+SLV,ETF,iShares Silver Trust
+DBC,ETF,Invesco DB Commodity Index Tracking Fund

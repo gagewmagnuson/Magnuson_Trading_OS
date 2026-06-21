@@ -1,0 +1,3 @@
+# Coverage manifests are committed config, not data exhaust.
+# Override the parent *.csv ignore for this directory only.
+!*.csv
