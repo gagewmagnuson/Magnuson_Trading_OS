@@ -56,7 +56,7 @@ class SecurityMasterWriter:
             (status, rows_in, rows_out, error, batch_id),
         )
 
-    def enrich(self, identity: FigiIdentity, source_id: int) -> bool:
+    def enrich(self, identity: FigiIdentity) -> bool:
         """
         Enrich the sec.security row for identity.ticker, resolved via its
         current TICKER identifier. Returns True if a row was updated.
@@ -84,17 +84,18 @@ class SecurityMasterWriter:
                 f"security_id {clash[0]}; refusing to duplicate."
             )
 
+        # DEC-017: source_id is the CREATOR and is left untouched on enrichment.
+        # Enrichment provenance lives in the OPENFIGI ingest_batch, not here.
         self.conn.execute(
             """
             update sec.security
                set figi = %s,
                    composite_figi = %s,
                    description = %s,
-                   country = coalesce(country, 'US'),
-                   source_id = %s
+                   country = coalesce(country, 'US')
              where security_id = %s
             """,
             (identity.figi, identity.share_class_figi,
-             identity.name or identity.ticker, source_id, sec_id),
+             identity.name or identity.ticker, sec_id),
         )
         return True

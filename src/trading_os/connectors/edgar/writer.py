@@ -3,8 +3,8 @@ Bitemporal writer. Owns all Postgres interaction for the connector.
 
 Responsibilities:
   * Open an ingest_batch row, stamp it on every fact written, close it.
-  * Resolve security_id from ticker (creating a minimal sec.security +
-    TICKER identifier on first sight, since V0 has no OpenFIGI seed yet).
+  * Resolve security_id from ticker (resolve-and-skip: returns None if the
+    ticker is not in the security master; never creates one — DEC-017).
   * Insert fund.filing rows (one per accession) and fund.fundamental_fact
     rows (append-only; the schema trigger blocks UPDATE/DELETE).
   * Detect same-concept/same-period disagreement among mapped facts and log
@@ -58,39 +58,21 @@ class FactWriter:
             (status, rows_in, rows_out, error, batch_id),
         )
 
-    # ---- security resolution (minimal, V0) -------------------------------
-    def resolve_or_create_security(self, ticker: str, batch_id: int) -> int:
+    # ---- security resolution (resolve-and-skip, DEC-017) -----------------
+    def resolve_security(self, ticker: str) -> int | None:
         """
-        V0 has no OpenFIGI seed yet, so we lazily create a minimal security
-        and a TICKER identifier the first time we see a ticker. figi is left
-        NULL; the unique(figi) constraint permits multiple NULLs in Postgres.
+        Resolve an existing security_id for a ticker, or None if the ticker is
+        not in the security master.
+
+        Per DEC-017 the universe/security-master layer is the SOLE creator of
+        identities; this connector never creates one. A None result means the
+        caller must skip the ticker (warn + count), not create it.
         """
         found = self.conn.execute(
             "select sec.resolve_ticker(%s, current_date)",
             (ticker,),
         ).fetchone()
-        if found and found[0] is not None:
-            return found[0]
-
-        sec_id = self.conn.execute(
-            """
-            insert into sec.security (security_type, description, source_id)
-            values ('EQUITY', %s,
-                    (select source_id from ref.data_source where name='SEC_EDGAR'))
-            returning security_id
-            """,
-            (f"{ticker} (created by EDGAR connector)",),
-        ).fetchone()[0]
-
-        self.conn.execute(
-            """
-            insert into sec.security_identifier
-                (security_id, id_type, id_value, valid_from, knowledge_time, batch_id)
-            values (%s, 'TICKER', %s, date '1900-01-01', now(), %s)
-            """,
-            (sec_id, ticker, batch_id),
-        )
-        return sec_id
+        return found[0] if found and found[0] is not None else None
 
     # ---- filings ---------------------------------------------------------
     def upsert_filing(self, security_id: int, accession: str, form: str,

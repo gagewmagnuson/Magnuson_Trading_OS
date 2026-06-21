@@ -488,3 +488,52 @@ Consequence: V0 now closes with exactly two remaining deliverables —
 (6) trading-calendar population via `exchange_calendars` into
 `ref.trading_session`, and (7) the DuckDB cross-store PIT query proof. When both
 pass, the V0 gate in ROADMAP.md is met.
+
+## DEC-017 — Identity creation is owned solely by the universe/security-master layer
+**Date:** 2026-06
+**Status:** Active
+
+The universe/security-master layer is the SOLE creator of `sec.security`
+identities. Every other connector resolves an existing identity and never
+creates one:
+
+- **Universe layer** — creates `sec.security` + its `TICKER` identifier from a
+  coverage manifest; sets `cik` when resolvable. The only code path that inserts
+  into `sec.security`.
+- **OpenFIGI** — enriches existing identities (FIGI, composite_figi,
+  description, country); never inserts.
+- **EDGAR / Alpaca bars / corporate actions** — **resolve-and-skip**: if a
+  ticker is not already in the master, warn, skip it, count it in the run
+  summary, and continue. Never create, never crash, never skip silently. This
+  changes EDGAR's writer from resolve-or-create to resolve-only
+  (`resolve_security` returns `None` on a miss).
+
+This refines DEC-002 (which set surrogate/FIGI identity but did not name the
+creation owner). After this decision exactly one code path inserts into
+`sec.security` — the universe writer. The only other insert anywhere in the repo
+is the synthetic, rolled-back fixture in `test_security_master.py`, which never
+persists.
+
+**`source_id` means the CREATOR of the identity, not the last system to touch
+it.** It answers "why does this identity exist": for coverage securities that is
+`UNIVERSE`; for the 5 legacy EDGAR cohort it is `SEC_EDGAR` (restored by
+`006_backfill_cohort_source.sql`). OpenFIGI therefore does NOT overwrite
+`source_id` on enrichment; enrichment provenance lives in `meta.ingest_batch`
+(the `OPENFIGI`-sourced batch), not on the security row.
+
+**CIK** is a first-class nullable column on `sec.security` (added in
+`005_add_cik.sql`): an issuer-level, immutable SEC key, not effective-dated.
+Share classes of one issuer share a CIK.
+
+**Onboarding contract — how a security enters the system:**
+`coverage manifest -> universe layer creates identity (+CIK) -> OpenFIGI
+enriches (FIGI) -> connectors attach fundamentals / bars / actions
+(resolve-and-skip)`.
+
+**Out of scope of this decision:** the *contents* of the coverage universe. The
+current coverage set (a large-cap US equity SEED universe from SPY holdings —
+explicitly NOT authoritative S&P 500 membership — plus a curated ETF set) is
+operational CONFIG in committed manifests (`universe/manifests/`, declared by
+`registry.csv`), changeable without amending this DEC. DEC-011's
+`VALIDATION_TICKERS` (the EDGAR *fundamentals* gate) is likewise separate and
+unchanged: identity coverage and fundamentals coverage stay decoupled.

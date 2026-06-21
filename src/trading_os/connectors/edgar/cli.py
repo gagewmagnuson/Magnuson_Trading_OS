@@ -65,6 +65,15 @@ def ingest_ticker(ticker: str, cik: str, conn: psycopg.Connection,
         return summary
 
     writer = FactWriter(conn, config)
+
+    # DEC-017: resolve-and-skip. The universe layer is the sole creator of
+    # identities; if this ticker was never seeded, skip it (the caller warns
+    # and counts) without opening a batch or creating anything.
+    security_id = writer.resolve_security(ticker)
+    if security_id is None:
+        summary["skipped"] = "not in security master"
+        return summary
+
     kt = datetime.now(timezone.utc)
     batch_id = writer.open_batch(
         dataset="fund.fundamental_fact",
@@ -72,7 +81,6 @@ def ingest_ticker(ticker: str, cik: str, conn: psycopg.Connection,
         params={"ticker": ticker, "cik": cik, "bronze": ref.path},
     )
     try:
-        security_id = writer.resolve_or_create_security(ticker, batch_id)
         written, conflicts = writer.write_facts(security_id, mapped, batch_id)
 
         # Log unmapped against the most recent filing for this security.
@@ -120,13 +128,22 @@ def main(argv: list[str] | None = None) -> int:
     config = EdgarConfig()
     with psycopg.connect(config.pg_conninfo) as conn:
         mapper = ConceptMapper.from_rows(_load_alias_rows(conn))
+        skipped = 0
         for ticker, cik in targets.items():
             try:
                 s = ingest_ticker(ticker, cik, conn, config, mapper, args.dry_run)
-                print(f"[ok] {ticker}: " +
-                      ", ".join(f"{k}={v}" for k, v in s.items() if k != "ticker"))
+                if s.get("skipped"):
+                    skipped += 1
+                    print(f"[skip] {ticker}: not in security master — "
+                          f"run the universe seeder first", file=sys.stderr)
+                else:
+                    print(f"[ok] {ticker}: " +
+                          ", ".join(f"{k}={v}" for k, v in s.items() if k != "ticker"))
             except Exception as e:  # noqa: BLE001
                 print(f"[FAIL] {ticker}: {e}", file=sys.stderr)
+        if skipped:
+            print(f"[summary] {skipped}/{len(targets)} ticker(s) skipped "
+                  f"(not in security master).", file=sys.stderr)
     return 0
 
 

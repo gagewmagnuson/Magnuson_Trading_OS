@@ -120,3 +120,88 @@ def test_ticker_reuse_resolves_per_date(conn):
 
 class _Rollback(Exception):
     """Sentinel to roll back the synthetic fixture without failing the test."""
+
+# ===========================================================================
+# Chunk-2 additions — APPEND these to tests/test_security_master.py.
+# (Do not create a separate file; paste the functions below to the end of the
+#  existing test module. They reuse its `conn` fixture and need no new imports
+#  at module level — the EDGAR test imports locally.)
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# 4. Universe coverage is seeded at scale (security master, chunk 1).
+# ---------------------------------------------------------------------------
+def test_universe_coverage_scale(conn):
+    counts = dict(
+        conn.execute(
+            "select security_type, count(*) from sec.security group by 1"
+        ).fetchall()
+    )
+    assert counts.get("EQUITY", 0) >= 500, f"expected ~503 seeded equities, got {counts}"
+    assert counts.get("ETF", 0) >= 20, f"expected the curated ETF set, got {counts}"
+
+
+# ---------------------------------------------------------------------------
+# 5. An individual constituent (UNH) is fully onboarded: identity + CIK + FIGI.
+#    This is the constituent-level guarantee the universe layer exists to give.
+# ---------------------------------------------------------------------------
+def test_constituent_unh_fully_onboarded(conn):
+    sid = conn.execute(
+        "select sec.resolve_ticker('UNH', current_date)"
+    ).fetchone()[0]
+    assert sid is not None, "UNH should be an individually-queryable security"
+    figi, cik = conn.execute(
+        "select figi, cik from sec.security where security_id = %s", (sid,)
+    ).fetchone()
+    assert figi and figi.startswith("BBG"), f"UNH FIGI is '{figi}' (expected BBG...)"
+    assert cik and len(cik) == 10, f"UNH CIK is '{cik}' (expected 10 digits)"
+
+
+# ---------------------------------------------------------------------------
+# 6. FIGI coverage is high after OpenFIGI scaling. A coverage metric, not 100%:
+#    some share-class/ETF tickers legitimately return no mapping.
+# ---------------------------------------------------------------------------
+def test_figi_coverage_is_high(conn):
+    total, with_figi = conn.execute(
+        "select count(*), count(figi) from sec.security"
+    ).fetchone()
+    assert total >= 500
+    assert with_figi / total >= 0.95, (
+        f"FIGI coverage {with_figi}/{total} is below 95%; did OpenFIGI scale?"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 7. DEC-017: source_id is the CREATOR. Enrichment must NOT stamp OPENFIGI onto
+#    a security row — enrichment provenance lives in meta.ingest_batch.
+# ---------------------------------------------------------------------------
+def test_source_id_is_creator_not_enricher(conn):
+    n = conn.execute(
+        """
+        select count(*) from sec.security s
+        join ref.data_source ds on ds.source_id = s.source_id
+        where ds.name = 'OPENFIGI'
+        """
+    ).fetchone()[0]
+    assert n == 0, (
+        "no sec.security row may carry source_id = OPENFIGI; source_id is the "
+        "creator, not the last enricher (DEC-017)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 8. DEC-017: EDGAR resolves but CANNOT create. An unseeded ticker resolves to
+#    None and the security count is unchanged — identity creation is owned
+#    solely by the universe layer.
+# ---------------------------------------------------------------------------
+def test_edgar_cannot_create_identity(conn):
+    from trading_os.connectors.edgar.config import EdgarConfig
+    from trading_os.connectors.edgar.writer import FactWriter
+
+    before = conn.execute("select count(*) from sec.security").fetchone()[0]
+    writer = FactWriter(conn, EdgarConfig())
+    sid = writer.resolve_security("ZZ_UNSEEDED_TICKER_XYZ")
+    assert sid is None, "EDGAR must not resolve a ticker that was never seeded"
+    after = conn.execute("select count(*) from sec.security").fetchone()[0]
+    assert before == after, "EDGAR resolve must never create a security (DEC-017)"
