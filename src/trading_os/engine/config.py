@@ -34,3 +34,10 @@ class EngineConfig:
         # Derived, regenerable, NON-authoritative V0 proof artifact (gitignored).
         # NOT a system of record — Postgres is. See store.py module docstring.
         return self.lake_root / "silver" / "macro_obs"
+    
+    @property
+    def bars_eod_dir(self) -> Path:
+        # Authoritative silver: unadjusted EOD bars (DEC-003). Generic path; the
+        # engine reads it vendor-agnostically. Unlike macro_silver_dir this is a
+        # real system-of-record dataset, not a derived proof artifact.
+        return self.lake_root / "silver" / "bars_eod"

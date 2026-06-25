@@ -84,3 +84,11 @@ def lake_root() -> str:
 
 def sec_user_agent() -> str:
     return get("TRADING_OS_SEC_UA", "Magnuson Trading OS admin@example.com")
+
+
+def alpaca_key() -> str:
+    return require("TRADING_OS_ALPACA_KEY")
+
+
+def alpaca_secret() -> str:
+    return require("TRADING_OS_ALPACA_SECRET")

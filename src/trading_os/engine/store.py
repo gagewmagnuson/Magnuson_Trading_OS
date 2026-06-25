@@ -28,7 +28,7 @@ which proves the two paths agree (test_parquet_path_equals_postgres_asof).
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import duckdb
@@ -44,15 +44,18 @@ class DuckDBStore:
         self.con: duckdb.DuckDBPyConnection | None = None
 
     # ---- lifecycle ----
-    def connect(self) -> None:
-        """Open an in-memory DuckDB, load the postgres extension, and attach
-        Postgres READ-ONLY. INSTALL downloads the extension once (needs internet
-        on the first run only)."""
+    def connect(self, attach_postgres: bool = True) -> None:
+        """Open an in-memory DuckDB. When attach_postgres is True (default), load
+        the postgres extension and ATTACH Postgres READ-ONLY for cross-store
+        queries. Pure-Parquet reads (e.g. bars_eod_asof) pass False to skip the
+        attach, so they need no Postgres at all. INSTALL downloads the extension
+        once (needs internet on the first run only)."""
         con = duckdb.connect()
-        con.execute("INSTALL postgres")
-        con.execute("LOAD postgres")
-        attach = settings.pg_conninfo()
-        con.execute(f"ATTACH '{attach}' AS pg (TYPE postgres, READ_ONLY)")
+        if attach_postgres:
+            con.execute("INSTALL postgres")
+            con.execute("LOAD postgres")
+            attach = settings.pg_conninfo()
+            con.execute(f"ATTACH '{attach}' AS pg (TYPE postgres, READ_ONLY)")
         self.con = con
 
     def close(self) -> None:
@@ -163,6 +166,58 @@ class DuckDBStore:
         """
         return self.con.execute(sql).fetchall()
 
+    # ---- point-in-time read: EOD bars (generic, vendor-agnostic) ----
+    def bars_eod_asof(self, as_of, security_ids=None, start=None, end=None):
+        """
+        EOD bars as KNOWN on `as_of`, from the silver Parquet lake: for each
+        (security_id, session_date), the row with the latest knowledge_time
+        <= as_of. No lookahead; a revision appears only from its knowledge_time
+        onward. Generic over any bars producer — knows only the bars_eod schema.
+
+        as_of: date (treated as end-of-day UTC) or tz-aware datetime.
+        Optional filters: security_ids (list), start/end on session_date.
+        Returns rows:
+          (security_id, symbol, session_date, open, high, low, close,
+           volume, trade_count, vwap, knowledge_time, source)
+        """
+        assert self.con is not None, "call connect() first"
+        import glob as _glob
+        if not _glob.glob(self._bars_glob()):
+            return []
+        where = ["knowledge_time <= ?"]
+        args: list = [self._as_of_ts(as_of)]
+        if security_ids:
+            where.append(f"security_id in ({','.join('?' for _ in security_ids)})")
+            args.extend(security_ids)
+        if start is not None:
+            where.append("session_date >= ?"); args.append(start)
+        if end is not None:
+            where.append("session_date <= ?"); args.append(end)
+        sql = f"""
+        SELECT security_id, symbol, session_date, open, high, low, close,
+               volume, trade_count, vwap, knowledge_time, source
+        FROM (
+            SELECT *,
+                   row_number() OVER (PARTITION BY security_id, session_date
+                                      ORDER BY knowledge_time DESC) AS rn
+            FROM read_parquet('{self._bars_glob()}')
+            WHERE {" AND ".join(where)}
+        ) WHERE rn = 1
+        ORDER BY security_id, session_date
+        """
+        return self.con.execute(sql, args).fetchall()
+
+    @staticmethod
+    def _as_of_ts(as_of):
+        """Normalize as_of to a tz-aware UTC timestamp for comparison against
+        knowledge_time. A plain date means end-of-day UTC."""
+        if isinstance(as_of, datetime):
+            return as_of if as_of.tzinfo else as_of.replace(tzinfo=timezone.utc)
+        return datetime(as_of.year, as_of.month, as_of.day, 23, 59, 59, tzinfo=timezone.utc)
+
     # ---- helpers ----
     def _macro_glob(self) -> str:
         return (self.config.macro_silver_dir / "*.parquet").as_posix()
+    
+    def _bars_glob(self) -> str:
+        return (self.config.bars_eod_dir / "*.parquet").as_posix()
