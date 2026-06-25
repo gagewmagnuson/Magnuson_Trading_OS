@@ -105,20 +105,38 @@ class BarsWriter:
         out_file = self.config.silver_dir / f"bars_eod_batch_{batch_id}.parquet"
         tmp_file = out_file.with_suffix(".parquet.tmp")
 
-        con = duckdb.connect()
+        # Bulk write via a transient CSV. Python's csv.writer streams 1.34M rows
+        # to disk in seconds (C-backed, no per-row DB round-trips); DuckDB then
+        # bulk-loads the CSV into the typed table and writes Parquet in one
+        # columnar pass. Uses only DuckDB's most stable COPY features — no
+        # relation API, no register, no pyarrow/pandas. Memory stays flat: the
+        # CSV streams to disk, nothing mirrors the dataset in RAM.
+        import csv
+
+        tmp_csv = out_file.with_suffix(".csv.tmp")
+        kt = knowledge_time.isoformat()
         try:
-            con.execute(_BARS_DDL)
-            rows = [
-                (b.security_id, b.symbol, b.session_date, b.open, b.high, b.low,
-                 b.close, b.volume, b.trade_count, b.vwap,
-                 knowledge_time, batch_id, "ALPACA")
-                for b in bars
-            ]
-            con.executemany(
-                "insert into bars values (?,?,?,?,?,?,?,?,?,?,?,?,?)", rows
-            )
-            con.execute(f"copy bars to '{tmp_file.as_posix()}' (FORMAT PARQUET)")
+            with tmp_csv.open("w", newline="") as f:
+                w = csv.writer(f)
+                for b in bars:
+                    w.writerow([
+                        b.security_id, b.symbol, b.session_date.isoformat(),
+                        b.open, b.high, b.low, b.close, b.volume,
+                        "" if b.trade_count is None else b.trade_count,
+                        "" if b.vwap is None else b.vwap,
+                        kt, batch_id, "ALPACA",
+                    ])
+            con = duckdb.connect()
+            try:
+                con.execute("SET TimeZone='UTC'")
+                con.execute(_BARS_DDL)
+                con.execute(
+                    f"COPY bars FROM '{tmp_csv.as_posix()}' (FORMAT CSV, HEADER false)"
+                )
+                con.execute(f"COPY bars TO '{tmp_file.as_posix()}' (FORMAT PARQUET)")
+            finally:
+                con.close()
         finally:
-            con.close()
+            tmp_csv.unlink(missing_ok=True)
         tmp_file.replace(out_file)
         return len(bars)
