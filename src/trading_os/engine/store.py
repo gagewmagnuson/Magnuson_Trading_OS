@@ -167,23 +167,58 @@ class DuckDBStore:
         return self.con.execute(sql).fetchall()
 
     # ---- point-in-time read: EOD bars (generic, vendor-agnostic) ----
-    def bars_eod_asof(self, as_of, security_ids=None, start=None, end=None):
+    def bars_eod_asof(self, as_of, security_ids=None, start=None, end=None, adjustment=None):
         """
         EOD bars as KNOWN on `as_of`, from the silver Parquet lake: for each
         (security_id, session_date), the row with the latest knowledge_time
         <= as_of. No lookahead; a revision appears only from its knowledge_time
         onward. Generic over any bars producer — knows only the bars_eod schema.
 
-        as_of: date (treated as end-of-day UTC) or tz-aware datetime.
-        Optional filters: security_ids (list), start/end on session_date.
+        adjustment: None -> raw stored bars (default, unchanged behaviour).
+                    "split" -> split-adjusted prices (+ volume), continuous.
+                    "total_return" -> split + cash-dividend adjusted prices.
+        Adjustment is computed ON READ (DEC-004): raw storage is never mutated.
+        Only corporate actions KNOWN by as_of (ex_date <= as_of AND
+        knowledge_time <= as_of) are applied — the same as_of that filters bars,
+        so the adjustment itself is lookahead-free. Requires the Postgres attach
+        (connect(attach_postgres=True)).
+
         Returns rows:
-          (security_id, symbol, session_date, open, high, low, close,
-           volume, trade_count, vwap, knowledge_time, source)
+        (security_id, symbol, session_date, open, high, low, close,
+        volume, trade_count, vwap, knowledge_time, source)
         """
         assert self.con is not None, "call connect() first"
         import glob as _glob
         if not _glob.glob(self._bars_glob()):
             return []
+        if adjustment is None:
+            return self._bars_eod_asof_raw(as_of, security_ids, start, end)
+
+        from .adjust import apply_factors_to_bars, compute_adjustment_factors
+        # Adjust over each security's FULL history (so an action's day-before-ex
+        # reference close and every later factor are present), then slice.
+        full = self._bars_eod_asof_raw(as_of, security_ids, None, None)
+        if not full:
+            return []
+        sec_ids = sorted({b[0] for b in full})
+        actions = self._fetch_actions(sec_ids, as_of)
+        closes: dict = {}
+        sessions: dict = {}
+        for b in full:
+            closes.setdefault(b[0], {})[b[2]] = b[6]      # close
+            sessions.setdefault(b[0], []).append(b[2])    # already ordered by query
+        factors = compute_adjustment_factors(actions, closes, sessions,
+                                            mode=adjustment)
+        adjusted = apply_factors_to_bars(full, factors)
+        if start is not None:
+            adjusted = [b for b in adjusted if b[2] >= start]
+        if end is not None:
+            adjusted = [b for b in adjusted if b[2] <= end]
+        return adjusted
+
+    def _bars_eod_asof_raw(self, as_of, security_ids=None, start=None, end=None):
+        """The raw PIT bar query (latest knowledge_time <= as_of per
+        (security_id, session_date)). Pure Parquet; no Postgres needed."""
         where = ["knowledge_time <= ?"]
         args: list = [self._as_of_ts(as_of)]
         if security_ids:
@@ -195,17 +230,48 @@ class DuckDBStore:
             where.append("session_date <= ?"); args.append(end)
         sql = f"""
         SELECT security_id, symbol, session_date, open, high, low, close,
-               volume, trade_count, vwap, knowledge_time, source
+            volume, trade_count, vwap, knowledge_time, source
         FROM (
             SELECT *,
-                   row_number() OVER (PARTITION BY security_id, session_date
-                                      ORDER BY knowledge_time DESC) AS rn
+                row_number() OVER (PARTITION BY security_id, session_date
+                                    ORDER BY knowledge_time DESC) AS rn
             FROM read_parquet('{self._bars_glob()}')
             WHERE {" AND ".join(where)}
         ) WHERE rn = 1
         ORDER BY security_id, session_date
         """
         return self.con.execute(sql, args).fetchall()
+
+    def _fetch_actions(self, security_ids, as_of):
+        """PIT-filtered corporate actions for `security_ids` (ex_date <= as_of
+        AND knowledge_time <= as_of), read through the Postgres attach. Returns
+        a list of adjust.Action. Requires connect(attach_postgres=True)."""
+        from .adjust import Action
+        if not security_ids:
+            return []
+        as_of_d = as_of.date() if isinstance(as_of, datetime) else as_of
+        ph = ",".join("?" for _ in security_ids)
+        rows = self.con.execute(
+            f"""
+            SELECT security_id, action_type, ex_date, split_from, split_to,
+                cash_amount
+            FROM pg.corp.corporate_action
+            WHERE security_id IN ({ph})
+            AND ex_date <= ?
+            AND knowledge_time <= ?
+            ORDER BY ex_date
+            """,
+            [*security_ids, as_of_d, self._as_of_ts(as_of)],
+        ).fetchall()
+        return [
+            Action(
+                security_id=r[0], action_type=r[1], ex_date=r[2],
+                split_from=(float(r[3]) if r[3] is not None else None),
+                split_to=(float(r[4]) if r[4] is not None else None),
+                cash_amount=(float(r[5]) if r[5] is not None else None),
+            )
+            for r in rows
+        ]
 
     @staticmethod
     def _as_of_ts(as_of):
@@ -218,6 +284,6 @@ class DuckDBStore:
     # ---- helpers ----
     def _macro_glob(self) -> str:
         return (self.config.macro_silver_dir / "*.parquet").as_posix()
-    
+        
     def _bars_glob(self) -> str:
         return (self.config.bars_eod_dir / "*.parquet").as_posix()
