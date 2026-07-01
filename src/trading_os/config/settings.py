@@ -92,3 +92,7 @@ def alpaca_key() -> str:
 
 def alpaca_secret() -> str:
     return require("TRADING_OS_ALPACA_SECRET")
+
+
+def tiingo_key() -> str:
+    return require("TRADING_OS_TIINGO_KEY")
