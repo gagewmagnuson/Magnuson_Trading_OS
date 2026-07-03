@@ -537,3 +537,47 @@ operational CONFIG in committed manifests (`universe/manifests/`, declared by
 `registry.csv`), changeable without amending this DEC. DEC-011's
 `VALIDATION_TICKERS` (the EDGAR *fundamentals* gate) is likewise separate and
 unchanged: identity coverage and fundamentals coverage stay decoupled.
+
+## DEC-018 — Canonical corporate-action knowledge_time = ingest time
+
+Corporate actions ingested by a canonical connector are stamped with
+`knowledge_time = ingest fetch time`, not the ex-date or the market announcement
+date. Rationale: the lake's knowledge axis has always meant "when THIS SYSTEM
+first knew," not "when the market theoretically knew." Announcement timestamps
+vary by vendor and reintroduce ambiguity; ingest time is unambiguous and aligns
+with how the bars backfill stamped knowledge_time. The ex_date remains the
+price-effect anchor used by the adjustment engine. (The bootstrap loader uses
+ex_date-based knowledge_time as a documented bootstrap simplification.)
+
+## DEC-019 — Corporate-action source precedence (read-time, per action)
+
+Multiple sources (BOOTSTRAP, TIINGO, and future SEC/Polygon/MANUAL) may hold an
+action for the same (security_id, action_type, ex_date). Because the store is
+append-only, conflicting or duplicate rows COEXIST and are never deleted or
+mutated. Resolution occurs exclusively at READ time, in
+`DuckDBStore._resolve_source_precedence`, per (security_id, action_type,
+ex_date): the highest-precedence source's row is kept.
+
+Precedence: MANUAL > SEC > TIINGO > BOOTSTRAP.
+
+This deduplicates identical-payload multi-source actions (so a factor is never
+applied twice) and, where payloads differ, selects the highest-precedence
+source. Payload DISAGREEMENTS between sources are surfaced by the
+corporate-actions DQ check, not silently reconciled at read time.
+
+Principle (broader than this decision): **no connector ever mutates or
+invalidates another connector's rows.** Sources are additive; ownership is
+explicit via source_id; conflicts are resolved by read-time precedence, never by
+write-time deletion.
+
+## DEC-020 — Institutional market data as foundational infrastructure post-PoC
+
+After successful validation of the Trading OS data architecture (adjustment
+engine Validators A & B, DQ checks, corporate-actions connector), paid
+institutional-quality data services are justified as operational dependencies.
+Infrastructure costs should be driven by validated platform capability rather
+than speculative development. This retires the "$0 until proof of concept"
+constraint, which is now satisfied. The principle is vendor-neutral: it holds if
+Tiingo is later replaced by Polygon, FactSet, Refinitiv, ICE, or another
+provider — Tiingo remains one swappable connector (source_id-attributed), not a
+permanent dependency.
