@@ -40,6 +40,7 @@ from trading_os.engine.adjust import Action
 from .actions import derive_actions
 from .client import TiingoClient
 from .config import TiingoConfig
+from trading_os.corp.action_write import write_actions
 
 BOOTSTRAP_SOURCE = "BOOTSTRAP"
 # Prices are the ex-date's raw close (Tiingo divCash is on the ex-date); we
@@ -85,74 +86,21 @@ def _resolve_security_id(conn: psycopg.Connection, ticker: str) -> int | None:
     return row[0] if row and row[0] is not None else None
 
 
-def _payload_matches(existing: tuple, a: Action) -> bool:
-    """existing = (split_from, split_to, cash_amount) from the DB row."""
-    ef, et, ec = existing
-    if a.action_type == "SPLIT":
-        return (_num_eq(ef, a.split_from) and _num_eq(et, a.split_to))
-    return _num_eq(ec, a.cash_amount)
-
-
-def _num_eq(a, b, tol=1e-9) -> bool:
-    if a is None and b is None:
-        return True
-    if a is None or b is None:
-        return False
-    return abs(float(a) - float(b)) <= tol
-
-
 def _load_symbol(conn: psycopg.Connection, source_id: int, ticker: str,
                  actions: list[Action]) -> LoadStats:
+    # Bootstrap knowledge_time = ex_date (bootstrap simplification; the canonical
+    # Tiingo connector uses ingest time per DEC-018). Since actions can span many
+    # ex-dates, we write each with its own ex-date-based knowledge_time.
     st = LoadStats(ticker, len(actions), 0, 0, 0, [])
     for a in actions:
-        # Look for any existing action on this (security, type, ex_date, source).
-        rows = conn.execute(
-            """
-            select split_from, split_to, cash_amount
-            from corp.corporate_action
-            where security_id = %s and action_type = %s and ex_date = %s
-              and source_id = %s
-            """,
-            (a.security_id, a.action_type, a.ex_date, source_id),
-        ).fetchall()
-        if rows:
-            if any(_payload_matches(r, a) for r in rows):
-                st.skipped_exact += 1                      # outcome 1
-                continue
-            # outcome 2: same date, different payload -> warn + skip
-            existing_desc = "; ".join(_desc_row(r, a.action_type) for r in rows)
-            st.conflicts += 1
-            st.warnings.append(
-                f"CONFLICT {ticker} {a.action_type} {a.ex_date}: "
-                f"existing [{existing_desc}] != incoming [{_desc_action(a)}] "
-                f"-> skipping (bootstrap policy)"
-            )
-            continue
-        # outcome 3: insert. knowledge_time = ex_date (bootstrap simplification).
         kt = datetime(a.ex_date.year, a.ex_date.month, a.ex_date.day,
                       tzinfo=timezone.utc)
-        conn.execute(
-            """
-            insert into corp.corporate_action
-                (security_id, action_type, ex_date, split_from, split_to,
-                 cash_amount, knowledge_time, source_id)
-            values (%s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (a.security_id, a.action_type, a.ex_date,
-             a.split_from, a.split_to, a.cash_amount, kt, source_id),
-        )
-        st.inserted += 1
+        res = write_actions(conn, [a], source_id, kt, label=ticker)
+        st.inserted += res.inserted
+        st.skipped_exact += res.skipped_exact
+        st.conflicts += res.conflicts
+        st.warnings.extend(res.warnings)
     return st
-
-
-def _desc_row(r: tuple, action_type: str) -> str:
-    sf, st_, cc = r
-    return f"{sf}->{st_}" if action_type == "SPLIT" else f"${cc}"
-
-
-def _desc_action(a: Action) -> str:
-    return f"{a.split_from}->{a.split_to}" if a.action_type == "SPLIT" else f"${a.cash_amount}"
-
 
 def bootstrap(symbols: list[str], start: date, end: date | None = None,
               config: TiingoConfig | None = None) -> list[LoadStats]:

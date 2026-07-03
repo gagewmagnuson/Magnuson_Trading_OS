@@ -253,25 +253,55 @@ class DuckDBStore:
         ph = ",".join("?" for _ in security_ids)
         rows = self.con.execute(
             f"""
-            SELECT security_id, action_type, ex_date, split_from, split_to,
-                cash_amount
-            FROM pg.corp.corporate_action
-            WHERE security_id IN ({ph})
-            AND ex_date <= ?
-            AND knowledge_time <= ?
-            ORDER BY ex_date
+            SELECT ca.security_id, ca.action_type, ca.ex_date,
+                   ca.split_from, ca.split_to, ca.cash_amount, ds.name
+            FROM pg.corp.corporate_action ca
+            JOIN pg.ref.data_source ds ON ds.source_id = ca.source_id
+            WHERE ca.security_id IN ({ph})
+              AND ca.ex_date <= ?
+              AND ca.knowledge_time <= ?
+            ORDER BY ca.ex_date
             """,
             [*security_ids, as_of_d, self._as_of_ts(as_of)],
         ).fetchall()
-        return [
-            Action(
-                security_id=r[0], action_type=r[1], ex_date=r[2],
-                split_from=(float(r[3]) if r[3] is not None else None),
-                split_to=(float(r[4]) if r[4] is not None else None),
-                cash_amount=(float(r[5]) if r[5] is not None else None),
+        pairs = [
+            (
+                r[6],  # source name
+                Action(
+                    security_id=r[0], action_type=r[1], ex_date=r[2],
+                    split_from=(float(r[3]) if r[3] is not None else None),
+                    split_to=(float(r[4]) if r[4] is not None else None),
+                    cash_amount=(float(r[5]) if r[5] is not None else None),
+                ),
             )
             for r in rows
         ]
+        return self._resolve_source_precedence(pairs)
+    
+    # Source precedence (DEC-019). Sources coexist (append-only); resolution is
+    # read-time, per action. When multiple sources carry an action for the same
+    # (security_id, action_type, ex_date), keep only the highest-precedence
+    # source's copy — this deduplicates identical-payload multi-source actions
+    # (e.g. BOOTSTRAP + TIINGO on the same dividend) so a factor is never applied
+    # twice. When payloads DIFFER across sources, precedence still selects one
+    # (highest-precedence wins); the disagreement itself is surfaced by the
+    # corporate-actions DQ check, not silently reconciled here.
+    _SOURCE_PRECEDENCE = {"MANUAL": 0, "SEC": 1, "TIINGO": 2, "BOOTSTRAP": 3}
+
+    def _resolve_source_precedence(self, pairs):
+        """pairs: list of (source_name, Action). Returns a list of Action with
+        one action per (security_id, action_type, ex_date), chosen from the
+        highest-precedence source present."""
+        best: dict[tuple, tuple[int, "object"]] = {}
+        for source_name, action in pairs:
+            key = (action.security_id, action.action_type, action.ex_date)
+            rank = self._SOURCE_PRECEDENCE.get(source_name, 99)
+            current = best.get(key)
+            if current is None or rank < current[0]:
+                best[key] = (rank, action)
+        # preserve ex_date ordering (the query already ORDER BY ex_date)
+        return [a for _, a in sorted(
+            best.values(), key=lambda ra: ra[1].ex_date)]
 
     @staticmethod
     def _as_of_ts(as_of):

@@ -210,12 +210,19 @@ def run_validator_b(symbols, start, end, sample,
             actions, _ = derive_actions(sid, trows)
             expected = len(actions)
             retrieved = len(store._fetch_actions([sid], as_of))
+            # An action can only adjust bars STRICTLY BEFORE its ex_date, so an
+            # action whose ex_date is <= the first bar (or > the last) has no bar
+            # to act on and is legitimately inapplicable — not a coverage miss.
             if lake_raw:
                 lo, hi = min(lake_raw), max(lake_raw)
-                applied = sum(1 for a in actions if lo < a.ex_date <= hi)
+                applicable = [a for a in actions if lo < a.ex_date <= hi]
             else:
-                applied = 0
-            cov = (100.0 * applied / expected) if expected else 100.0
+                applicable = []
+            applied = len(applicable)
+            # coverage = applied / APPLICABLE (boundary actions excluded), so a
+            # dividend on the first bar date doesn't fail an otherwise-correct name.
+            cov = (100.0 * applied / len(applicable)) if applicable else 100.0
+            boundary = expected - applied  # reported for transparency
 
             common = sorted(set(lake_raw) & set(t_raw) & set(lake_adj) & set(t_adj))
             chosen = _sample_dates(common, sample)
@@ -229,7 +236,7 @@ def run_validator_b(symbols, start, end, sample,
             ok = (adj_s.n > 0
                   and adj_s.correlation > corr_min
                   and adj_s.r2 > corr_min
-                  and applied == expected
+                  and applied == len(applicable)
                   and adj_s.max < TR_MAX_TOL)
 
             print(f"\n{sym}  (n={adj_s.n} compared dates)")
@@ -239,7 +246,7 @@ def run_validator_b(symbols, start, end, sample,
                   f"corr={adj_s.correlation:.7f} R2={adj_s.r2:.7f}")
             print(f"  pipeline delta: mean={delta_mean:+.2e} max={delta_max:+.2e}")
             print(f"  actions      : expected={expected} retrieved={retrieved} "
-                  f"applied={applied}  coverage={cov:.1f}%")
+                  f"applied={applied} (boundary={boundary})  coverage={cov:.1f}%")
             print(f"  PIT          : actions retrieved as-of {as_of} "
                   f"(knowledge_time/ex_date filtered)")
             verdict = "PASS" if ok else "FAIL"

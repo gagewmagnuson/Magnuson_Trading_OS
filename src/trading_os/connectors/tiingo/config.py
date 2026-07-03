@@ -11,6 +11,13 @@ DAILY_PRICES_PATH = "/tiingo/daily/{ticker}/prices"
 # Tiingo free tier is generous for our low request count; pace politely.
 REQUESTS_PER_MINUTE = 60
 
+from datetime import date
+
+# Align corporate-action history with the bars floor (Alpaca history since 2016).
+HISTORY_START = date(2016, 1, 1)
+# Recent-window size for --incremental steady-state refresh.
+INCREMENTAL_WINDOW_DAYS = 10
+
 
 @dataclass(frozen=True)
 class TiingoConfig:
