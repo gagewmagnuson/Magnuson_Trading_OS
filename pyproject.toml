@@ -20,11 +20,14 @@ dependencies = [
     "exchange_calendars==4.13.2", # trading-session source of truth (calendars connector)
     "python-dotenv==1.2.2",       # .env loading in config/settings.py
     "duckdb==1.5.4",              # analytical engine + postgres attach  # CONFIRM: pip show duckdb
+    "fastapi==0.139.0",           # V1 read-only serving API (DEC-021 auth; as_of endpoints)
+    "uvicorn==0.49.0",            # ASGI server that runs the FastAPI app
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest==9.1.0",
+    "pytest==9.1.0",   # test runner
+    "httpx==0.28.1",   # required by fastapi/starlette TestClient (drives the ASGI app in-process)
 ]
 
 [build-system]

@@ -581,3 +581,125 @@ constraint, which is now satisfied. The principle is vendor-neutral: it holds if
 Tiingo is later replaced by Polygon, FactSet, Refinitiv, ICE, or another
 provider — Tiingo remains one swappable connector (source_id-attributed), not a
 permanent dependency.
+
+## DEC-021 — API-key consumer authentication via a simple lookup table
+**Date:** 2026-07
+**Status:** Active
+
+The V1 serving API (FastAPI, read-only, `as_of` on every endpoint) authenticates
+consumers with per-consumer API keys stored in a new table, `meta.api_consumer`.
+
+**Storage.** One row per consumer: `consumer_id`, `label`, `key_hash`,
+`key_prefix`, `is_active`, `created_at`, and `revoked_at` (audit). The raw API
+key is NEVER stored — only its SHA-256 hex hash. A key is minted by an admin CLI
+that prints the raw key exactly once and persists only the hash, mirroring how
+GitHub/Stripe issue tokens.
+
+**Why a table, not env vars.** Per-consumer keys are in the V1 scope line, and
+the governing principle is "simplify the implementation sequence, not the
+architecture" — do not make choices that permanently constrain future scale.
+Env-based keys would need ripping out to support a second consumer or a 3–5
+person research team; a lookup table supports multiple consumers today with no
+redesign.
+
+**Explicitly NOT multi-tenant.** This is simple authentication — hash the
+presented key, look it up, check `is_active` — NOT authorization, roles, scopes,
+per-consumer entitlements, or row-level access. The ROADMAP says "simple, not
+multi-tenant," and multi-tenant entitlements remain a V3+ item (ARCHITECTURE.md
+capability table). `meta.api_consumer` is a credential lookup, nothing more.
+
+**Hashing choice.** API keys are high-entropy random tokens (256-bit), so a fast
+cryptographic hash (SHA-256) with a unique-index lookup is the correct, standard
+approach. Password KDFs (bcrypt/argon2) defend low-entropy human passwords
+against offline brute force — a threat model that does not apply to random
+tokens — so they are deliberately not used here.
+
+**Mutability.** `meta.api_consumer` is reference/config data, not an append-only
+fact table, so it is intentionally NOT covered by the no-mutation triggers in
+`001_v0.sql`: revoking a key sets `is_active = false` (and stamps `revoked_at`);
+a row is never deleted. Minting/revoking keys is an admin CLI action, not a
+serving-API operation — the serving API itself remains strictly read-only.
+
+**Consequence.** New migration `schema/postgres/007_api_consumer.sql` creates the
+table. The read facade (`src/trading_os/api/deps.py`) validates the
+`Authorization: Bearer <key>` header against it on every request; an absent,
+unknown, or inactive key returns 401.
+
+## DEC-022 — Serving API uses connection-per-request Postgres access (pool deferred)
+**Date:** 2026-07
+**Status:** Active
+
+The V1 serving API opens a short-lived, read-only psycopg connection per
+request (in `src/trading_os/api/deps.py::get_conn`) and closes it when the
+request completes. It does NOT use a connection pool.
+
+**Why per-request now.** V1 load is a single paper/live model issuing periodic
+`as_of` reads over 30 days (the V1→V2 gate). Per-request connections are correct
+under that load, add zero dependencies, and keep the first slice minimal. A pool
+(`psycopg_pool`) optimizes the per-request connection-open cost and caps total
+Postgres connections under sustained concurrency — a real benefit only once
+multiple consumers hit the API simultaneously, which V1 does not have.
+
+**Not a scale trap.** Routers depend on an abstract connection dependency
+(`Depends(get_conn)`), never on how the connection is produced. Swapping to a
+pool is a change contained entirely within `deps.py` — no router, endpoint
+contract, or `*_asof()` path changes. This is the project principle in action:
+simplify the implementation sequence, not the architecture.
+
+**Trigger to revisit.** Adopt `psycopg_pool` (pinned, with its own DECISIONS
+amendment) when a second concurrent consumer is onboarded, or when
+connection-open latency or Postgres connection-count limits are observed under
+load — whichever comes first. Until then, per-request stands.
+
+**Read-only enforcement.** `get_conn` sets the connection read-only as
+defense-in-depth: the serving API must never write (ARCHITECTURE.md), and a
+read-only connection makes an accidental write in a router fail at the database.
+Key minting/revocation is a separate admin path on its own writable connection,
+never through the serving API.
+
+## DEC-023 — Serving-API response contract (verified by tests/test_api_bars.py)
+**Date:** 2026-07
+**Status:** Active
+
+The V1 serving API's JSON response contract, established by `/v1/bars/{symbol}`
+and mirrored by every future data endpoint. Verified end-to-end by
+`tests/test_api_bars.py` before being recorded here — this documents behavior
+that is tested, not merely intended.
+
+**Envelope holds identity; rows are data-only.** A response is an envelope
+carrying the resolved identity (`symbol`, `security_id`) and query echo
+(`as_of`, `adjustment`, `start`, `end`, `count`) plus a data array. Identity is
+NOT repeated on each row. `count` always equals the length of the array so
+consumers never compute it.
+
+**`as_of` is optional and defaults to latest known.** Omitting `as_of` returns
+data as known at request time (today, end-of-day UTC). A pinned `as_of` is
+fully reproducible: identical pinned requests return byte-identical responses
+(`test_pinned_as_of_is_reproducible`). Consumers requiring reproducibility MUST
+pin `as_of`; the default is a convenience for live "latest" reads, not a
+reproducible query.
+
+**`knowledge_time` is exposed on every row.** Each row carries the bitemporal
+`knowledge_time`, and every returned row satisfies `knowledge_time <= as_of`
+(the PIT guarantee, asserted by `test_pit_knowledge_time_not_after_as_of`).
+Exposing it lets consumers reason about and verify point-in-time correctness
+rather than trust it blindly.
+
+**Deterministic ordering.** Time series are returned in a defined order
+(bars: ascending by `session_date`), so consumers never depend on incidental
+ordering. Asserted by `test_bars_ascending_by_session_date`.
+
+**Adjustment / derived semantics are parameters, not endpoint logic.** On-read
+transformations (e.g. price `adjustment`) are parameters passed INTO the read
+layer; the API computes nothing and mutates nothing. Invalid enum values are
+rejected as 422 by FastAPI; an unresolved identifier is 404; a valid identifier
+with no data in range is 200 with `count: 0`.
+
+**Status-code conventions.** 401 (missing/invalid/inactive key, DEC-021), 404
+(identifier unresolved as of `as_of`), 422 (malformed/invalid parameters), 200
+(success, including empty result sets).
+
+**Deferred note — TestClient httpx dependency.** Starlette deprecates `httpx`
+under `TestClient` in favor of `httpx2`. `httpx==0.28.1` works and all tests
+pass; revisit only when Starlette removes `httpx` support. Tracked here to keep
+it off the active backlog.
