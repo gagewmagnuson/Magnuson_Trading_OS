@@ -141,3 +141,43 @@ class FundamentalsResponse(BaseModel):
     statement: str | None = Field(default=None, description="Statement filter, if given.")
     count: int = Field(description="Number of facts returned.")
     facts: list[FundamentalFact]
+
+
+class MacroObservation(BaseModel):
+    """One point-in-time macro observation, data-only (series identity is on the envelope)."""
+    obs_date: date = Field(
+        description="Event-time: the period this value refers to (e.g. the quarter for GDP)."
+    )
+    value: Decimal | None = Field(
+        default=None,
+        description="Exact value, serialized as a JSON string to preserve numeric precision. "
+                    "NULL is legitimate data: FRED publishes missing observations.",
+    )
+    vintage_date: date = Field(
+        description="Knowledge_time: the date this value was published or revised (DEC-005). "
+                    "Every returned row satisfies vintage_date <= as_of. Revisable series "
+                    "(GDP, CPI, payrolls) have MANY vintages per obs_date — the value as first "
+                    "released differs from the value as later revised, and this endpoint returns "
+                    "the one knowable at as_of. Non-revisable market series (Treasury yields, "
+                    "spreads) have exactly one vintage, where vintage_date = obs_date (DEC-015). "
+                    "Note: a vintage_date of 1776-07-04 is ALFRED's sentinel for 'first/only known "
+                    "vintage', retained as a genuine first-known marker — not a literal "
+                    "publication date."
+    )
+
+
+class MacroResponse(BaseModel):
+    """Envelope for GET /v1/macro/{series}. Observations ascend by obs_date."""
+    series_id: str = Field(description="Canonical FRED series id (e.g. 'GDPC1'), upper-cased.")
+    title: str = Field(description="Human-readable series title.")
+    units: str | None = None
+    frequency: str | None = Field(default=None, description="D | W | M | Q | A.")
+    seasonal_adj: str | None = None
+    as_of: date = Field(
+        description="Knowledge cutoff (end-of-day UTC). Omit for latest known; "
+                    "pin for reproducible queries."
+    )
+    start: date | None = Field(default=None, description="Inclusive obs_date lower bound, if given.")
+    end: date | None = Field(default=None, description="Inclusive obs_date upper bound, if given.")
+    count: int = Field(description="Number of observations returned.")
+    observations: list[MacroObservation]

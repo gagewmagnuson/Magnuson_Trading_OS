@@ -42,7 +42,7 @@ def get_bars(
     # Validate the range up front — a clear 422 beats a confusing empty result.
     if start is not None and end is not None and start > end:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="start must be <= end.",
         )
 
