@@ -24,7 +24,7 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 
 from trading_os.api.deps import Consumer, require_consumer
-from trading_os.api.routers import bars
+from trading_os.api.routers import bars, fundamentals
 
 app = FastAPI(
     title="Magnuson Trading OS — Serving API",
@@ -34,6 +34,7 @@ app = FastAPI(
 )
 
 app.include_router(bars.router)
+app.include_router(fundamentals.router)
 
 @app.get("/v1/health", tags=["ops"])
 def health() -> dict[str, str]:

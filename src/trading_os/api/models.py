@@ -10,6 +10,7 @@ envelope; each bar is data-only, so identity is not repeated on every row.
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -62,3 +63,81 @@ class BarsResponse(BaseModel):
     end: date | None = Field(default=None, description="Inclusive session_date upper bound, if given.")
     count: int = Field(description="Number of bars returned (length of `bars`).")
     bars: list[BarRow]
+
+
+class PeriodType(str, Enum):
+    """Selects the FLOW duration to return; instant (balance-sheet) concepts are
+    included alongside flows to form a complete financial snapshot (DEC-014).
+
+    annual    -- annual-duration flows (period_end - period_start in 350..380 days)
+                 PLUS all instant concepts  -> a complete annual snapshot
+    quarterly -- quarterly-duration flows (85..95 days) PLUS all instant concepts
+    instant   -- instant concepts ONLY (balance sheet alone)
+
+    Instants have no duration (period_start IS NULL), so they cannot participate
+    in a duration-mixing bug: including them never mixes annual with quarterly
+    flows, which is precisely what DEC-014 exists to prevent. Durations are
+    derived from actual dates, never from the unreliable `fiscal_period` label.
+
+    YTD facts (6/9-month durations) exist in the store but are NOT served: DEC-014
+    defines no canonical YTD band, and inventing one here would contradict a frozen
+    decision. Exposing YTD requires a DEC-014 amendment first.
+
+    # future: a separate `view`/`include_instants` axis could decouple "which flow
+    # duration" from "do instants come along" (the Bloomberg/FactSet snapshot model).
+    # Deliberately not built in V1 -- it is a new architectural axis, not a gap.
+    """
+    annual = "annual"
+    quarterly = "quarterly"
+    instant = "instant"
+
+
+class FundamentalFact(BaseModel):
+    """One point-in-time fundamental fact, data-only (identity is on the envelope)."""
+    concept: str = Field(description="Canonical concept name (e.g. 'revenue', 'total_assets').")
+    statement: str = Field(description="income | balance | cashflow | other.")
+    period_start: date | None = Field(
+        default=None,
+        description="Start of the period a flow covers. Null for instant concepts.",
+    )
+    period_end_date: date = Field(
+        description="Period end (flows) or the as-at date (instants)."
+    )
+    duration_days: int | None = Field(
+        default=None,
+        description="period_end_date - period_start, in days. Null for instants. "
+                    "Derived from actual dates, never from fiscal_period (DEC-014).",
+    )
+    fiscal_period: str | None = Field(
+        default=None,
+        description="Vendor's fiscal-period label (FY/Q1/...). Informational only; "
+                    "unreliable, and never used to determine duration.",
+    )
+    value: Decimal = Field(
+        description="Exact numeric value, serialized as a JSON string to preserve "
+                    "database precision (stored as numeric, never float)."
+    )
+    unit: str = Field(description="Unit of the value (e.g. 'USD', 'shares').")
+    knowledge_time: datetime = Field(
+        description="Filing acceptance time (filed_at) -- when this fact first became "
+                    "knowable. Every returned row satisfies knowledge_time <= as_of."
+    )
+
+
+class FundamentalsResponse(BaseModel):
+    """Envelope for GET /v1/fundamentals/{symbol}. Facts are ordered by
+    (concept, period_end_date) ascending."""
+    symbol: str
+    security_id: int
+    as_of: date = Field(
+        description="Knowledge cutoff (end-of-day UTC). Omit for latest known; "
+                    "pin for reproducible queries."
+    )
+    period_type: PeriodType = Field(
+        description="The resolved period_type actually applied (echoed, so the caller "
+                    "always knows which snapshot they received)."
+    )
+    concept: str | None = Field(default=None, description="Concept filter, if given.")
+    statement: str | None = Field(default=None, description="Statement filter, if given.")
+    count: int = Field(description="Number of facts returned.")
+    facts: list[FundamentalFact]
