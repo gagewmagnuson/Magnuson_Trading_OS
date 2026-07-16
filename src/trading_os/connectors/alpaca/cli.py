@@ -22,6 +22,8 @@ import psycopg
 
 from trading_os.config import settings
 
+from trading_os.bars.writer import write_bars_parquet
+
 from .client import AlpacaClient
 from .config import AlpacaConfig
 from .parser import parse_bars
@@ -47,10 +49,10 @@ def run(conn, config: AlpacaConfig, client: AlpacaClient,
         requested: list[str], start: date, dry_run: bool) -> int:
     writer = BarsWriter(conn, config)
     sec_map = writer.resolve_security_ids(requested)
-    skipped = [s for s in requested if s not in sec_map]
+    skipped_syms = [s for s in requested if s not in sec_map]
     print(f"[alpaca] {len(requested)} symbols requested, {len(sec_map)} resolved, "
-          f"{len(skipped)} skipped"
-          + (f" e.g. {', '.join(skipped[:8])}" if skipped else ""))
+          f"{len(skipped_syms)} skipped"
+          + (f" e.g. {', '.join(skipped_syms[:8])}" if skipped_syms else ""))
     if not sec_map:
         print("[alpaca] nothing to fetch (no requested symbol is in the master).")
         return 0
@@ -65,16 +67,20 @@ def run(conn, config: AlpacaConfig, client: AlpacaClient,
         print("[alpaca] dry-run: no Parquet or batch written.")
         return 0
 
-    kt = datetime.now(timezone.utc)
+    # Batch knowledge_time is the INGEST timestamp — lineage for "when the system
+    # fetched" (meta.ingest_batch). It is distinct from each bar's per-session
+    # knowledge_time, which the shared writer derives (DEC-024 Rule 1).
+    ingest_kt = datetime.now(timezone.utc)
     source_id = writer.ensure_source()
     batch_id = writer.open_batch(
-        source_id, kt,
+        source_id, ingest_kt,
         {"symbols": len(sec_map), "start": start.isoformat(),
          "feed": config.feed, "adjustment": config.adjustment, "bronze": ref.path},
     )
     try:
-        n = writer.write_bars_parquet(bars, kt, batch_id)
-        writer.close_batch(batch_id, "succeeded", rows_in=len(bars), rows_out=n)
+        result = write_bars_parquet(bars, config.silver_dir, "ALPACA", batch_id)
+        writer.close_batch(batch_id, "succeeded",
+                           rows_in=len(bars), rows_out=result.rows_written)
         conn.commit()
     except Exception as e:  # noqa: BLE001
         conn.rollback()
@@ -87,8 +93,15 @@ def run(conn, config: AlpacaConfig, client: AlpacaClient,
         print(f"[FAIL] {e}", file=sys.stderr)
         return 1
 
-    print(f"[alpaca] wrote {n} bars -> "
+    print(f"[alpaca] wrote {result.rows_written} bars -> "
           f"{config.silver_dir}/bars_eod_batch_{batch_id}.parquet (batch {batch_id})")
+    if result.skipped:
+        print(f"[alpaca] DQ: skipped {len(result.skipped)} bar(s) on non-session "
+              f"dates (not written):")
+        for s in result.skipped[:10]:
+            print(f"          {s.symbol} {s.session_date.isoformat()} — {s.reason}")
+        if len(result.skipped) > 10:
+            print(f"          ... and {len(result.skipped) - 10} more")
     return 0
 
 
