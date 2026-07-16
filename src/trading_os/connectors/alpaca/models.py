@@ -1,23 +1,17 @@
-"""Typed shapes for the Alpaca bars connector."""
+"""Typed shapes for the Alpaca bars connector.
+
+The canonical `Bar` now lives in trading_os.bars.models (DEC-024: dataset-scoped,
+source-independent). It is re-exported here so intra-connector imports remain
+stable; BronzeRef is Alpaca-specific and stays.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 
+from trading_os.bars.models import Bar  # re-export: canonical bars model
 
-@dataclass(frozen=True)
-class Bar:
-    """One unadjusted daily bar, resolved to a security_id."""
-    security_id: int
-    symbol: str
-    session_date: date
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: int
-    trade_count: int | None
-    vwap: float | None
+__all__ = ["Bar", "BronzeRef"]
 
 
 @dataclass(frozen=True)
