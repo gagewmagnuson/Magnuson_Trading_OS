@@ -703,3 +703,167 @@ with no data in range is 200 with `count: 0`.
 under `TestClient` in favor of `httpx2`. `httpx==0.28.1` works and all tests
 pass; revisit only when Starlette removes `httpx` support. Tracked here to keep
 it off the active backlog.
+
+## DEC-024 — knowledge_time = earliest honest availability (EOD bars + corporate actions); silver rebuild
+**Date:** 2026-07
+**Status:** Active
+
+Adopting Tiingo Power as the historical EOD price backbone (see DEC-025) forces a
+latent question the post-2016-only lake never exposed: what does `knowledge_time`
+mean for a fact ingested long after it was knowable? This DEC settles it as one
+principle applied per-dataset, and sanctions rebuilding the silver bars layer to
+enforce it uniformly. It refines — does not overturn — DEC-018.
+
+**Governing principle.** `knowledge_time` is the EARLIEST MOMENT THE INFORMATION
+WAS OBJECTIVELY KNOWABLE, not when this system fetched it. Ingest time is the
+fallback ONLY where true availability is genuinely ambiguous. SCHEMA.md already
+defines the axis as "when you could first have known it"; this DEC makes the
+implementation match that definition instead of stamping ingest wall-clock.
+
+**Why this refines DEC-018 rather than contradicting it.** DEC-018 stamped
+corporate actions at ingest time and asserted the axis "has always meant when
+THIS SYSTEM first knew." That reasoning is correct only where availability is
+ambiguous (vendor announcement timestamps vary). It is wrong where availability
+is objective. The axis's true meaning is *earliest honest availability*; ingest
+time is its degenerate case, not its definition. DEC-018's scope is hereby
+AMENDED: its ingest-time rule governs FORWARD-CAPTURED corporate actions only.
+
+**Rule 1 — EOD bars (all sources).** `knowledge_time` = the security's exchange
+close on `session_date`, expressed in UTC (derived via `exchange_calendars`; the
+per-exchange session close, not midnight, to avoid the anti-conservative
+"knowable at 00:00" error). This is DATASET-scoped, not source-scoped: Alpaca and
+Tiingo bars carry identical semantics, so the two remain interchangeable under
+DEC-019 precedence. The source must never determine the meaning of the column.
+
+**Rule 2 — backfilled corporate actions.** `knowledge_time` = the `ex_date`
+(expressed as its session close, UTC). A split/dividend's price effect and public
+knowability are anchored at ex-date — market-objective, like a bar's close. This
+is REQUIRED for correctness, not cosmetics: `bars_eod_asof(as_of, adjustment=...)`
+filters BOTH bars and actions by `knowledge_time <= as_of`. If backfilled actions
+kept ingest-time (2026) knowledge while bars became historically visible, every
+historical adjusted read would silently return RAW prices (no action knowable at
+a past as_of) — the exact lookahead-shadow this DEC exists to close. (Note: the
+original bootstrap loader's ex-date stamping, called a "simplification" in
+DEC-018, was in fact the more PIT-correct choice for historical research.)
+
+**Rule 3 — forward capture (both datasets).** From each dataset's capture epoch
+forward, facts are fetched near their availability moment, so market-availability
+and ingest time approximately coincide; ingest-time stamping remains acceptable
+for forward-captured corporate actions (DEC-018 survives, scoped to capture).
+
+**Bars are bitemporal, not static.** Raw OHLCV revises rarely but does revise
+(vendor corrections; Tiingo runs an error-checking framework that updates prices).
+A correction is a NEW ROW with a later `knowledge_time` — never an overwrite —
+exactly as fundamentals restatements are handled. The transformation logic must
+not assume bars are correction-free.
+
+**Captured vs reconstructed history (the honest limitation).** A bar backfilled in
+2026 for session 1995 is stamped with 1995 market-close knowability, but its VALUE
+is the best CURRENT vintage — if a bad 1995 print was corrected in 2019, the
+original erroneous print is unrecoverable. This is RECONSTRUCTED history
+(backfilled from current vintages), not CAPTURED history (recorded as it happened,
+the irreplaceable moat of blueprint §11). Both are PIT-usable; they are not
+epistemically identical. Each dataset therefore records a **capture epoch**: before
+it, `knowledge_time` is reconstructed availability; from it forward, captured. The
+epoch is documented so no consumer or model mistakes reconstructed history for
+captured history. System-fetch provenance is NOT lost either way: `batch_id →
+meta.ingest_batch` still records when this system actually retrieved every row, so
+"when did our system know" remains answerable through lineage.
+
+**Silver rebuild sanctioned.** The silver bars layer is REBUILT from immutable
+bronze under Rule 1. This does not violate append-only: bronze is the immutable
+replay source, silver is reproducible derived state (DEC-012); re-deriving silver
+with corrected transformation logic is replaying history with better logic, not
+editing history. Fact tables and their `deny_mutation` triggers are untouched.
+The rebuild is validated (Alpaca-vs-Tiingo overlap comparison, 2016+; see DEC-025)
+and existing bars PIT/DQ tests (e.g. `test_revision_not_visible_early`) are updated
+IN THE SAME CHANGE to assert the new semantics, not discovered as failures later.
+
+**Consequence.** After this DEC, `bars_eod_asof(as_of=<any historical date>)`
+returns bars — and their correctly-knowable corporate actions — as objectively
+knowable at that date, making true SCHEMA.md's promise to "reconstruct exactly
+what a chart looked like on any past date." This closes the bars half of the
+knowledge_time-semantics gap (review W2/§9.2) for the whole dataset, historical
+and forward, across all sources.
+
+## DEC-025 — Tiingo is the canonical historical EOD source; Alpaca is an independent corroborating source
+**Date:** 2026-07
+**Status:** Active
+
+Tiingo Power becomes the authoritative source of historical end-of-day equity
+prices. Alpaca is retained — not as a fallback, but as an independent
+corroborating operational source. This decision is justified by EMPIRICAL
+INVESTIGATION of the two vendors' actual coverage, not by which one is paid for.
+
+**Why Tiingo is canonical (architectural reasons, demonstrated — not "because we
+pay for it").** A direct probe of the live Tiingo Power key established, as fact:
+- **Delisted coverage.** CELG (acquired 2019), ATVI (acquired 2023), and AABA
+  (liquidated ~2019) each return full historical daily bars. Prices for securities
+  that no longer trade are available — the survivorship-bias killer that blueprint
+  §2/§11 identify as core to the moat, and that Alpaca cannot provide.
+- **Depth.** Coverage runs to each security's listing (AAPL metadata: start
+  1980-12-12); 1990 bars return on request. Alpaca's Basic plan begins in 2016.
+- **Honest coverage windows.** Tiingo per-ticker metadata reports truthful
+  start/end dates, where `end` is the delisting date (CELG 2019-11-22, ATVI
+  2023-10-13) — raw material for honest security-master `valid_from`/`valid_to`
+  (addresses review W3) and corroboration of index-membership intervals.
+- **Corporate-action consistency.** Tiingo is already the canonical corporate-
+  action source; making it the price source too means prices and actions come from
+  one internally consistent vendor, which strengthens the adjustment engine.
+
+None of these is a business rationale. "We pay for it" would rot as a
+justification; "we probed it and it uniquely supplies delisted depth with honest
+coverage windows" is durable and re-verifiable. DEC-020 merely removed the budget
+constraint that would previously have blocked this; it is not the reason.
+
+**Alpaca's role (independent corroboration, not a spare tire).** Alpaca remains
+in scheduled ingestion as: the execution / paper-trading broker; the minute-bar
+source (Tiingo IEX intraday is a ~6-month rolling window on this key — see
+limitations); and an INDEPENDENT second EOD feed whose ongoing agreement with
+Tiingo is itself a data-quality signal. Multiple independent sources strengthen
+the system (blueprint §12 vendor-concentration mitigation); this is a feature, not
+a contingency. Both raw feeds are retained immutably in bronze and remain
+replayable.
+
+**Read-time precedence (DEC-019).** Where both sources cover a session (2016+),
+Tiingo is authoritative on read; Alpaca is the corroborating source. Semantics are
+identical across sources (DEC-024, Rule 1: knowledge_time is dataset-scoped, not
+source-scoped), so the two are interchangeable and precedence is a clean choice of
+authority, not a reconciliation of conflicting meanings.
+
+**History floor: none.** Ingest ALL available history from each security's earliest
+available trading day (IPO onward), not an arbitrary cutoff. This follows the
+project's spine — store all raw facts, filter at query time (a consumer wanting
+post-1990 data passes `start=`; it is not an ingestion policy). Storage cost is
+trivial; an artificial floor is a policy baked into immutable history that a future
+model cannot undo.
+
+**Identity: creates none (this phase).** The Tiingo EOD connector ingests deep
+history for securities ALREADY in the master, via resolve-and-skip (DEC-017). It
+writes only bars for existing `security_id`s and creates no identities. Expanding
+the master with delisted securities (using Tiingo coverage windows + index
+membership) is a SEPARATE, later hardening milestone with its own identity and
+symbology work — deliberately not bundled here.
+
+**Validation is a required deliverable.** The connector rollout is not complete
+until an Alpaca-vs-Tiingo overlap comparison (2016+, meaningful sample) is run and
+documented: OHLC agreement, volume, raw-vs-adjusted, missing sessions. High
+agreement (target ~99.99%+ on raw prices) is the empirical evidence that promotes
+Tiingo from "probed a few tickers" to "demonstrated canonical." Disagreement is
+itself a finding to surface before it can corrupt research. This mirrors the
+Validator-A/Validator-B rigor used for the corporate-actions milestone.
+
+**Honest limitations (what this decision does NOT solve).**
+- **Not intraday.** Tiingo IEX intraday history is a short rolling window on this
+  key; minute bars remain a separate V1 item with a separate source (Alpaca 2016+).
+- **Not symbology.** Tiingo supplies delisted prices and coverage windows, but not
+  clean point-in-time ticker→identity mapping (ticker reuse/renames). That
+  reconciliation remains the hardening milestone's work.
+- **Not W2 by itself.** PIT correctness of the historical backfill depends entirely
+  on DEC-024 (knowledge_time = market-close availability for bars, ex-date for
+  backfilled actions). This DEC chooses the source; DEC-024 makes it PIT-correct.
+
+**Consequence.** With DEC-024 + DEC-025, the platform gains decades of PIT-correct,
+delisted-inclusive EOD history from a source already integrated for corporate
+actions — directly strengthening the moat (survivorship-free historical research)
+and unblocking trustworthy cross-sectional work and the security-master expansion.
