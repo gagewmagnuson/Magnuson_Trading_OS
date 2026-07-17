@@ -326,6 +326,7 @@ Amendment log
 (Add entries here when a decision is changed, not by editing the original.)
 
 Date Decision amended Change Reason————
+2026-07  DEC-025  Silver EOD is Tiingo-only; Alpaca EOD retired to bronze (see DEC-026)  Redundancy belongs in bronze, canonical truth in silver; deletes source-precedence complexity
 
 ## DEC-011 — Validation cohort before scaling
 **Date:** 2026-06  
@@ -867,3 +868,56 @@ Validator-A/Validator-B rigor used for the corporate-actions milestone.
 delisted-inclusive EOD history from a source already integrated for corporate
 actions — directly strengthening the moat (survivorship-free historical research)
 and unblocking trustworthy cross-sectional work and the security-master expansion.
+
+## DEC-026 — Silver EOD bars are Tiingo-only; Alpaca EOD is retired to bronze (amends DEC-025)
+**Date:** 2026-07
+**Status:** Active
+
+Amends DEC-025's treatment of Alpaca. DEC-025 named Alpaca "an independent
+corroborating EOD source," which was read as implying Alpaca EOD bars are
+materialized into the silver layer alongside Tiingo. That is not the architecture
+we are choosing. This amendment makes silver single-source.
+
+**Amended stance.** The canonical EOD silver dataset is constructed EXCLUSIVELY
+from Tiingo. Alpaca EOD raw data remains in bronze for replay, auditing, and
+optional periodic validation, but is NOT materialized into silver except when
+explicitly rebuilding or validating the canonical dataset. Alpaca's daily EOD
+ingest is RETIRED (not scheduled); its existing bronze and its rebuild path are
+preserved as a disaster-recovery capability, not a live feed.
+
+**Vendor split (final).**
+- Tiingo: historical EOD, live EOD, corporate actions.
+- Alpaca: minute bars, execution, paper trading, broker integration.
+No Alpaca EOD in silver, and no scheduled Alpaca EOD ingest.
+
+**Why: redundancy belongs in bronze; canonical truth belongs in silver.** DEC-025
+already decided Tiingo is canonical. Materializing Alpaca EOD into silver as well
+would make silver hedge a decision already made, at the cost of duplicate rows per
+(security_id, session_date), cross-source read ambiguity, and precedence logic in
+every query. Corroboration does not require duplicate silver rows: both vendors'
+raw feeds live in bronze (replayable forever), so vendor comparison and any future
+silver rebuild from Alpaca remain fully possible from bronze alone.
+
+**Consequence — a class of complexity is deleted, not built.** Because silver holds
+exactly one EOD source, no cross-source overlap exists for a given
+(security_id, session_date), so the read path's existing
+`ORDER BY knowledge_time DESC` window stays deterministic WITHOUT a
+source-precedence tiebreak. A source-precedence read-path change was designed and
+found UNNECESSARY under this amendment; it is deliberately not implemented. The
+`source` column on silver rows is RETAINED — as honest provenance and as the key
+that makes a bronze-based Alpaca rebuild possible — but no read or write logic
+branches on it.
+
+**Validation (unchanged intent, relocated).** DEC-025's required Alpaca-vs-Tiingo
+overlap comparison is retained as a PERIODIC health check run from bronze (e.g.
+monthly, recent window, sampled), not as continuous silver materialization. The
+shared five-stage comparator (bars/validation.py) serves both this health check
+and the pre-swap validation of the Tiingo backfill. It is optional and deletable
+if it later proves to carry no signal worth its cost.
+
+**Migration.** The current live silver (the Alpaca rebuild of 2026-07-17,
+DEC-024-correct) is replaced by a Tiingo backfill built into staging, validated,
+and atomically swapped in via the existing rebuild/staging/swap machinery. The
+Alpaca-rebuilt silver and its backup remain until the Tiingo silver is validated
+and swapped, then the Alpaca silver ceases to be the canonical dataset (its bronze
+persists).
