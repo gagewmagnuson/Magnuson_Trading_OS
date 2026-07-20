@@ -56,13 +56,17 @@ class ValidationReport:
     duplicate_pairs: int = 0             # (security, session) pairs with >1 row
     duplicate_samples: list[tuple[int, date]] = field(default_factory=list)
     sampled: int = 0
-    value_diffs: list[ValueDiff] = field(default_factory=list)
+    price_tol: float = 0.0
+    price_diffs: list[ValueDiff] = field(default_factory=list)   # OHLC beyond tol — should be ~0
+    volume_diffs: list[ValueDiff] = field(default_factory=list)  # volume mismatches — often expected
+    volume_rel_median: float | None = None   # median |Δvol|/old_vol; ~0.09 = the definitional pattern
 
     @property
     def passed(self) -> bool:
         """Hard gate: no lost coverage, no duplicates, no knowledge_time violations.
-        Value diffs are surfaced for inspection but do NOT auto-fail (a rare vendor
-        revision is legitimate under latest-fetch-wins)."""
+        Value diffs (price or volume) are surfaced for inspection but do NOT
+        auto-fail — a rare vendor revision, and the expected volume-convention
+        difference, are both legitimate. A human reads price_diffs and decides."""
         return (
             self.coverage_missing == 0
             and self.duplicate_pairs == 0
@@ -80,13 +84,17 @@ class ValidationReport:
             + (f"  e.g. {self.knowledge_time_samples[:5]}" if self.knowledge_time_samples else ""),
             f"D. duplicate pairs: {self.duplicate_pairs:,}"
             + (f"  e.g. {self.duplicate_samples[:5]}" if self.duplicate_samples else ""),
-            f"E. sampled:         {self.sampled:,}  value diffs={len(self.value_diffs)}",
+            f"E. sampled:         {self.sampled:,}  (price tol {self.price_tol:.2%})",
+            f"   PRICE diffs:     {len(self.price_diffs):,}  <- should be ~0; scrutinize each",
+            f"   volume diffs:    {len(self.volume_diffs):,}"
+            + (f"  median |Δ|/old={self.volume_rel_median:.1%}" if self.volume_rel_median is not None else "")
+            + "  (expected: Tiingo exchange-cleared vs consolidated SIP)",
         ]
-        for d in self.value_diffs[:10]:
-            lines.append(f"     diff sec={d.security_id} {d.session_date} "
+        for d in self.price_diffs[:10]:
+            lines.append(f"     PRICE sec={d.security_id} {d.session_date} "
                          f"{d.column}: {d.old!r} -> {d.new!r}")
-        if len(self.value_diffs) > 10:
-            lines.append(f"     ... and {len(self.value_diffs) - 10} more diffs")
+        if len(self.price_diffs) > 10:
+            lines.append(f"     ... and {len(self.price_diffs) - 10} more price diffs")
         lines.append(f"RESULT: {'PASS' if self.passed else 'FAIL'}")
         return "\n".join(lines)
 
@@ -102,6 +110,7 @@ def validate_rebuild(
     new_glob: str,
     sample_size: int = 5000,
     seed: float = 0.42,
+    price_tol: float = 0.001,   # 0.1% relative — ignore sub-cent rounding, flag real disagreement
 ) -> ValidationReport:
     """Compare a rebuilt silver dataset (new_glob) against the prior one (old_glob).
 
@@ -163,8 +172,13 @@ def validate_rebuild(
             ).fetchone()[0]
             rep.knowledge_time_samples = [(None, d) for d in list(bad_dates)[:20]]
 
-        # E. sampled OHLCV comparison on shared pairs (reservoir = fixed count,
-        # REPEATABLE = reproducible sample for a given seed)
+        # E. sampled comparison on shared pairs — PRICE and VOLUME reported
+        # separately. Price diffs beyond price_tol are the ones to scrutinize
+        # (should be ~0). Volume diffs are counted separately because Tiingo's
+        # exchange-cleared volume runs ~8-11% below consolidated-SIP (Alpaca) by
+        # definition, not error — burying price signal under them would defeat
+        # the check. (reservoir = fixed count, REPEATABLE = reproducible sample.)
+        rep.price_tol = price_tol
         rows = con.execute(f"""
             SELECT o.security_id, o.session_date,
                    o.open, o.high, o.low, o.close, o.volume,
@@ -176,17 +190,29 @@ def validate_rebuild(
                 FROM {old}
             ) o
             JOIN {new} n USING (security_id, session_date)
-                WHERE o.rn = 1
-                USING SAMPLE reservoir({int(sample_size)} ROWS) REPEATABLE ({int(seed * 1000)})
-            """).fetchall()
+            WHERE o.rn = 1
+            USING SAMPLE reservoir({int(sample_size)} ROWS) REPEATABLE ({int(seed * 1000)})
+        """).fetchall()
         rep.sampled = len(rows)
-        cols = ["open", "high", "low", "close", "volume"]
+        price_cols = ["open", "high", "low", "close"]
+        vol_rels: list[float] = []
         for r in rows:
             sec, sd = r[0], r[1]
-            old_vals, new_vals = r[2:7], r[7:12]
-            for name, ov, nv in zip(cols, old_vals, new_vals):
-                if ov != nv:
-                    rep.value_diffs.append(ValueDiff(sec, sd, name, ov, nv))
+            old_ohlc, old_vol = r[2:6], r[6]
+            new_ohlc, new_vol = r[7:11], r[11]
+            for name, ov, nv in zip(price_cols, old_ohlc, new_ohlc):
+                if ov is None or nv is None:
+                    if ov != nv:
+                        rep.price_diffs.append(ValueDiff(sec, sd, name, ov, nv))
+                elif abs(ov - nv) > price_tol * max(abs(ov), abs(nv), 1e-9):
+                    rep.price_diffs.append(ValueDiff(sec, sd, name, ov, nv))
+            if old_vol != new_vol:
+                rep.volume_diffs.append(ValueDiff(sec, sd, "volume", old_vol, new_vol))
+            if old_vol and new_vol is not None:
+                vol_rels.append(abs(old_vol - new_vol) / old_vol)
+        if vol_rels:
+            vol_rels.sort()
+            rep.volume_rel_median = vol_rels[len(vol_rels) // 2]
     finally:
         con.close()
     return rep

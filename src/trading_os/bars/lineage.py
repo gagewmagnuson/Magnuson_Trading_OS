@@ -103,3 +103,23 @@ def resolve_security_ids(conn: psycopg.Connection, symbols: list[str]) -> dict[s
         if r and r[0] is not None:
             out[s] = r[0]
     return out
+
+def all_seeded_symbols(conn: psycopg.Connection, limit: int | None = None) -> list[str]:
+    """All currently-valid TICKER identifiers in the security master, sorted.
+
+    Shared across bars connectors (and future minute-bars): the set of symbols to
+    ingest. Mirrors the master's point-in-time identifier validity — only tickers
+    valid as of today are returned.
+    """
+    rows = conn.execute(
+        """
+        select si.id_value
+        from sec.security_identifier si
+        where si.id_type = 'TICKER'
+          and si.valid_from <= current_date
+          and (si.valid_to is null or si.valid_to >= current_date)
+        order by si.id_value
+        """
+    ).fetchall()
+    syms = [r[0] for r in rows]
+    return syms[:limit] if limit else syms

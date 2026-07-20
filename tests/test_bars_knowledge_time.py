@@ -52,3 +52,18 @@ def test_knowledge_time_is_deterministic():
     """Same input -> same output, always (a pinned-calendar reproducibility guard)."""
     d = date(2018, 6, 15)
     assert market_close_knowledge_time(d) == market_close_knowledge_time(d)
+
+
+def test_deep_historical_session_resolves():
+    """A 1999 session must resolve, not raise DateOutOfBounds — the Tiingo-depth
+    case that the default ~2006 calendar start missed."""
+    kt = market_close_knowledge_time(date(1999, 11, 18))  # a Thursday, real session
+    assert kt.date() == date(1999, 11, 18)
+    assert kt.astimezone(timezone.utc).hour == 21  # Nov = EST, 16:00 -> 21:00 UTC
+
+
+def test_very_old_session_resolves():
+    """A 1962 session must resolve — the deep-history case that undershot the
+    initial 1970 floor. The calendar must cover the full range of real equity dates."""
+    kt = market_close_knowledge_time(date(1962, 1, 2))
+    assert kt.date() == date(1962, 1, 2)

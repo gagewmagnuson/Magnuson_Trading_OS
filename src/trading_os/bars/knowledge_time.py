@@ -37,10 +37,18 @@ import exchange_calendars as xcals
 
 _CALENDAR_CODE = "XNYS"
 
-# Module-level calendar instance: construction is relatively expensive, and the
-# schedule is deterministic for a pinned library version, so build once and reuse
-# across the millions of calls a backfill makes.
-_cal = xcals.get_calendar(_CALENDAR_CODE)
+# Build with an explicit deep start so every historical session date we might see
+# is in range. exchange_calendars defaults to a ~20-year window whose first session
+# (2006) predates our deepest bars (Tiingo reaches each security's IPO, e.g. 1980s);
+# an out-of-range date RAISES DateOutOfBounds rather than returning False, so the
+# bound must cover the data. 1970 comfortably precedes any equity we ingest.
+# Module-level: construction is relatively expensive and the schedule is
+# deterministic for a pinned library version, so build once and reuse.
+# 1885 is XNYS's earliest supported session in exchange_calendars — below any real
+# US equity date, so no date we ingest can fall out of range (out-of-range RAISES
+# rather than returning False). Not a magic number: the library's deep bound, chosen
+# to end the "guess a floor, hit an older date" cycle. Build once, module-level.
+_cal = xcals.get_calendar(_CALENDAR_CODE, start="1885-01-01")
 
 
 class NonSessionDateError(ValueError):

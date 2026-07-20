@@ -40,7 +40,8 @@ def test_clean_rebuild_passes(tmp_path):
     assert rep.duplicate_pairs == 0
     assert rep.coverage_missing == 0
     assert rep.knowledge_time_violations == 0
-    assert rep.value_diffs == []
+    assert rep.price_diffs == []
+    assert rep.volume_diffs == []
 
 
 def test_lost_coverage_fails(tmp_path):
@@ -65,11 +66,30 @@ def test_duplicate_pair_fails(tmp_path):
     assert rep.duplicate_samples[0] == (1, date(2020, 1, 2))
 
 
-def test_value_diff_surfaced_but_not_auto_fail(tmp_path):
+def test_price_diff_surfaced_but_not_auto_fail(tmp_path):
     old = _write(tmp_path, "old", [_bar(s, close=1.5) for s in SESSIONS], 1)
     new = _write(tmp_path, "new", [_bar(s, close=(9.9 if s == SESSIONS[0] else 1.5))
                                     for s in SESSIONS], 2)
     rep = validate_rebuild(old, new, sample_size=100)
-    assert rep.passed  # value diffs alone do not fail
+    assert rep.passed  # a price diff alone does not fail the gate
     assert any(d.column == "close" and d.session_date == SESSIONS[0]
-               for d in rep.value_diffs)
+               for d in rep.price_diffs)
+    assert rep.volume_diffs == []
+
+
+def test_volume_diff_separate_from_price(tmp_path):
+    old = _write(tmp_path, "old", [_bar(s, volume=1000) for s in SESSIONS], 1)
+    new = _write(tmp_path, "new", [_bar(s, volume=(900 if s == SESSIONS[0] else 1000))
+                                   for s in SESSIONS], 2)
+    rep = validate_rebuild(old, new, sample_size=100)
+    assert rep.price_diffs == []                       # prices unchanged
+    assert any(d.column == "volume" for d in rep.volume_diffs)
+    assert rep.volume_rel_median is not None
+
+
+def test_subtolerance_price_diff_ignored(tmp_path):
+    # 1.5000 vs 1.5001 is ~0.007%, below the 0.1% default tol -> not flagged.
+    old = _write(tmp_path, "old", [_bar(s, close=1.5) for s in SESSIONS], 1)
+    new = _write(tmp_path, "new", [_bar(s, close=1.5001) for s in SESSIONS], 2)
+    rep = validate_rebuild(old, new, sample_size=100)
+    assert rep.price_diffs == []
