@@ -52,6 +52,7 @@ from trading_os.config import settings
 from .bars import ParseAnomaly, parse_bars
 from .client import TiingoClient
 from .config import TiingoConfig
+from .symbols import to_tiingo_symbol
 
 # No history floor (DEC-025/026). The Tiingo API requires a startDate, so we pass a
 # sentinel far below any security's IPO. This is NOT a policy cutoff and NOT a claim
@@ -117,7 +118,8 @@ def build_staging(
     try:
         for i, (symbol, sec_id) in enumerate(items, 1):
             try:
-                rows = client.fetch_daily(symbol, BARS_HISTORY_SENTINEL)
+                # Fetch with Tiingo's ticker format; Bar.symbol stays canonical.
+                rows = client.fetch_daily(to_tiingo_symbol(symbol), BARS_HISTORY_SENTINEL)
             except Exception as e:  # noqa: BLE001 — one bad ticker must not kill the run
                 fetch_failures.append((symbol, str(e)[:160]))
             else:
