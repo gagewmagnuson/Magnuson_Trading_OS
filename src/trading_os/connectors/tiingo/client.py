@@ -15,7 +15,7 @@ from datetime import date, datetime, timezone
 
 from trading_os.config import settings
 
-from .config import BASE_URL, DAILY_PRICES_PATH, TiingoConfig
+from .config import BASE_URL, DAILY_META_PATH, DAILY_PRICES_PATH, TiingoConfig
 
 
 class TiingoClient:
@@ -54,6 +54,15 @@ class TiingoClient:
         tmp.write_bytes(json.dumps(doc).encode("utf-8"))
         tmp.replace(out)
         return rows
+    
+    def fetch_metadata(self, ticker: str) -> dict:
+        """Ticker metadata: {ticker, name, startDate, endDate, exchangeCode, ...}.
+        startDate/endDate are Tiingo's honest coverage window (endDate = the last
+        trading day, i.e. the delisting date for a dead name). Not cached to bronze
+        (it's a lookup, not a fact series). Raises RuntimeError on HTTP error
+        (e.g. 404 for an unknown ticker)."""
+        path_part = DAILY_META_PATH.format(ticker=ticker.lower())
+        return self._get(path_part, {"token": self.token})
 
     def _get(self, path_part: str, params: dict, _attempt: int = 1):
         url = f"{BASE_URL}{path_part}?" + urllib.parse.urlencode(params)

@@ -15,6 +15,14 @@ import csv
 from pathlib import Path
 
 from .models import CoverageEntry, CoverageSource, SourceLoad
+from datetime import date
+
+
+def _parse_date(raw: str | None) -> date | None:
+    """Parse an optional ISO date cell. Blank/missing -> None (unknown/open bound).
+    Manifests without these columns work unchanged (row.get returns None)."""
+    s = (raw or "").strip()
+    return date.fromisoformat(s) if s else None
 
 
 def load_registry(config) -> list[CoverageSource]:
@@ -40,7 +48,8 @@ def load_registry(config) -> list[CoverageSource]:
 def load_manifest(path: Path, default_type: str | None = None) -> list[CoverageEntry]:
     """
     Read one manifest CSV. Required column: 'ticker'. Optional: 'security_type'
-    (falls back to default_type, then 'EQUITY') and 'name'. Missing file -> [].
+    (falls back to default_type, then 'EQUITY'), 'name', 'valid_from', 'valid_to'
+    (ISO dates; blank/absent -> None = unknown/open bound). Missing file -> [].
     Generic: knows nothing about which index produced the file.
     """
     if not path.exists():
@@ -53,7 +62,11 @@ def load_manifest(path: Path, default_type: str | None = None) -> list[CoverageE
                 continue
             stype = (row.get("security_type") or default_type or "EQUITY").strip().upper()
             name = (row.get("name") or "").strip() or None
-            out.append(CoverageEntry(ticker=ticker, security_type=stype, name=name))
+            out.append(CoverageEntry(
+                ticker=ticker, security_type=stype, name=name,
+                valid_from=_parse_date(row.get("valid_from")),
+                valid_to=_parse_date(row.get("valid_to")),
+            ))
     return out
 
 

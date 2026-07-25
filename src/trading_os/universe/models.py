@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 
@@ -11,6 +12,8 @@ class CoverageEntry:
     ticker: str
     security_type: str            # 'EQUITY' | 'ETF'
     name: str | None = None
+    valid_from: date | None = None  # honest listing start; None = unknown lower bound (sentinel)
+    valid_to: date | None = None    # honest delisting date; None = still listed / open
 
 
 @dataclass(frozen=True)

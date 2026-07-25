@@ -7,6 +7,8 @@ from pathlib import Path
 
 BASE_URL = "https://api.tiingo.com"
 DAILY_PRICES_PATH = "/tiingo/daily/{ticker}/prices"
+DAILY_PRICES_PATH = "/tiingo/daily/{ticker}/prices"
+DAILY_META_PATH = "/tiingo/daily/{ticker}"
 
 # Tiingo free tier is generous for our low request count; pace politely.
 REQUESTS_PER_MINUTE = 60
