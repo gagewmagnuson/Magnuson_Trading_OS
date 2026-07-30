@@ -921,3 +921,37 @@ and atomically swapped in via the existing rebuild/staging/swap machinery. The
 Alpaca-rebuilt silver and its backup remain until the Tiingo silver is validated
 and swapped, then the Alpaca silver ceases to be the canonical dataset (its bronze
 persists).
+
+## DEC-027 — Universe membership research reads are event-time only; knowledge_time is audit-only
+**Date:** 2026-07
+**Status:** Active
+
+`univ.members_asof(code, as_of)` originally filtered on BOTH event-time
+(valid_from/valid_to) AND knowledge_time (`knowledge_time::date <= as_of`).
+Populated from a reconstructed historical membership file with an honest
+knowledge_time = load time (2026), that filter makes every past-dated research
+query return empty (2026 <= 2008 is false), which is not the question backtests
+ask.
+
+**Decision.** For universe membership, the research read filters on EVENT-TIME
+ONLY. `members_asof(code, as_of)` returns the constituents whose membership
+interval contains `as_of`, using today's best reconstruction — it does NOT gate on
+knowledge_time. A separate `members_asof_bitemporal(code, as_of, known_as_of)`
+exposes the strict knowledge_time-gated query for audit/validation.
+
+**Why membership differs from bars/fundamentals/macro.** knowledge_time gating is
+essential for those because revisions and late arrivals genuinely happen, and
+lookahead must be prevented (DEC-024, ALFRED vintages, filing acceptance times).
+Reconstructed index membership has no meaningful "what had we captured by then" —
+the system did not exist at the historical dates. The honest knowledge_time on
+these rows answers a provenance question ("when did this reconstruction enter the
+DB"), not a research one ("who was in the index then"). So knowledge_time is
+retained and stored honestly (NOT faked to a past sentinel — that would destroy
+the reconstructed-vs-captured distinction, the same reason DEC-024 keeps them
+separate), but it does not gate research reads.
+
+**Consequence.** `members_asof` is the default research query and returns the
+event-time truth; `members_asof_bitemporal` is the explicit audit path. If
+membership is ever captured live (recording S&P announcements as they happen, with
+real-time knowledge_time), those captured rows remain correctly queryable by the
+bitemporal function — the distinction is preserved, not erased.
