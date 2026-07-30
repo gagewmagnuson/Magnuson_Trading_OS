@@ -27,3 +27,7 @@ Thumbs.db
 # VS Code
 .vscode/settings.json
 *.egg-info/
+
+# throwaway diagnostics and intermediate artifacts
+tmp/
+working/
