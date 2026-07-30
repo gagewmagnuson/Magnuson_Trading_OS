@@ -39,6 +39,12 @@ CLASSIFIER_VERSION = "corroborate-v1 (overlap-based, CIK/name dropped)"
 # The 5 thin-window reusers found in manual review of the add bucket (excluded).
 THIN_WINDOW_REUSE = {"HOT", "HONA", "PEAK", "WRK", "SOLS"}
 
+# Reusers found in manual review of the overlap bucket by NAME (ETF/wrong-entity
+# whose coverage window happened to touch the S&P membership window, so the
+# interval-overlap rule admitted them). The name is the tell the overlap rule
+# can't see. Excluded -> review.
+NAME_REUSE = {"CAM", "GENZ", "LLL", "NVLS", "PCL", "TSS", "EDS"}
+
 # The 21 REVIEW decisions (verified against company history). ADD = continuous |
 # new_identity; both admitted with Tiingo's honest window (identical handling, the
 # distinction is documentary). DEFER = manual_review | unavailable (excluded).
@@ -85,6 +91,8 @@ def _classify(r: dict) -> tuple[bool, str, str]:
     corr = r["corroboration"]
     if t in THIN_WINDOW_REUSE:
         return False, "excluded_reuse", "thin-window reuser (manual review)"
+    if t in NAME_REUSE:
+        return False, "excluded_reuse", "name reveals ETF/wrong-entity reuser (manual review)"
     if t in NEW_IDENTITY:
         return True, "new_identity", NEW_IDENTITY[t]
     if t in CONTINUOUS:

@@ -106,3 +106,81 @@ class UniverseWriter:
             (sec_id, entry.ticker, batch_id),
         )
         return True
+
+    # ---- honest-dated identity creation (survivorship expansion) --------
+    def _ticker_collision(self, ticker: str, valid_from, valid_to) -> int | None:
+        """Return an existing security_id if TICKER `ticker` already has an
+        identifier whose validity window OVERLAPS [valid_from, valid_to], else
+        None. This is the independent collision gate (DEC-017 identity safety):
+        two different securities must never claim the same ticker over overlapping
+        time. Open bounds (NULL) are treated as -inf / +inf.
+
+        NOTE: distinct from resolve_ticker(current_date) — a delisted security we
+        add won't resolve *today*, yet could still collide with a historical
+        holder of the same ticker. Window overlap is the correct test."""
+        row = self.conn.execute(
+            """
+            select security_id, valid_from, valid_to
+              from sec.security_identifier
+             where id_type = 'TICKER' and id_value = %s
+               and valid_from <= coalesce(%s, 'infinity'::date)
+               and coalesce(valid_to, 'infinity'::date) >= %s
+             limit 1
+            """,
+            (ticker, valid_to, valid_from),
+        ).fetchone()
+        return row[0] if row else None
+
+    def create_dated(self, entry: CoverageEntry, cik: str | None,
+                     source_id: int, batch_id: int) -> str:
+        """Create a security with an HONEST validity window from the manifest
+        (DEC-024 discipline applied to identity: valid_from is never fabricated).
+        Returns one of: 'created' | 'skipped_exists' | 'COLLISION'.
+
+        - already resolvable as-of valid_from with matching window -> skipped_exists
+          (idempotent re-run).
+        - ticker's window overlaps a DIFFERENT security -> 'COLLISION' (caller
+          aborts the whole run; identity corruption is not recoverable).
+        """
+        if entry.valid_from is None:
+            # Guard: honest window required. Should never reach here (emitter
+            # already excludes blank-window rows), but the writer refuses anyway.
+            return "COLLISION"  # treated as a hard stop; caller reports ticker
+
+        colliding = self._ticker_collision(entry.ticker, entry.valid_from, entry.valid_to)
+        if colliding is not None:
+            # Idempotency: if the collision IS an identical prior insert of this
+            # same expansion (same ticker + same valid_from), treat as already done.
+            same = self.conn.execute(
+                """
+                select 1 from sec.security_identifier
+                 where id_type='TICKER' and id_value=%s and valid_from=%s
+                   and security_id=%s
+                """,
+                (entry.ticker, entry.valid_from, colliding),
+            ).fetchone()
+            if same:
+                return "skipped_exists"
+            return "COLLISION"
+
+        sec_id = self.conn.execute(
+            """
+            insert into sec.security (security_type, description, source_id, cik)
+            values (%s, %s, %s, %s)
+            returning security_id
+            """,
+            (entry.security_type,
+             (entry.name or f"{entry.ticker}") + " (survivorship expansion)",
+             source_id, cik),
+        ).fetchone()[0]
+
+        self.conn.execute(
+            """
+            insert into sec.security_identifier
+                (security_id, id_type, id_value, valid_from, valid_to,
+                 knowledge_time, batch_id)
+            values (%s, 'TICKER', %s, %s, %s, now(), %s)
+            """,
+            (sec_id, entry.ticker, entry.valid_from, entry.valid_to, batch_id),
+        )
+        return "created"

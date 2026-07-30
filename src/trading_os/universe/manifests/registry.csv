@@ -1,3 +1,4 @@
 name,file,default_type
 sp500,sp500.csv,EQUITY
 etfs,etfs.csv,ETF
+survivorship_expansion,002_survivorship_expansion.csv,EQUITY
