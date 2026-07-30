@@ -37,6 +37,7 @@ from trading_os.bars.lineage import (
     ensure_source,
     open_batch,
     resolve_security_ids,
+    resolve_security_ids_any_time,
 )
 from trading_os.bars.models import Bar
 from trading_os.bars.silver_store import (
@@ -95,8 +96,15 @@ def build_staging(
     config: TiingoConfig,
     client: TiingoClient,
     requested: list[str],
+    historical: bool = False,
 ) -> BuildResult:
-    sec_map = resolve_security_ids(conn, requested)
+    if historical:
+        sec_map, ambiguous = resolve_security_ids_any_time(conn, requested)
+        if ambiguous:
+            print(f"[tiingo] WARNING: {len(ambiguous)} tickers map to >1 security "
+                  f"(reuse) and were SKIPPED: {ambiguous[:15]}")
+    else:
+        sec_map = resolve_security_ids(conn, requested)
     staging = clear_staging(_silver_dir(config))
 
     ingest_kt = datetime.now(timezone.utc)
@@ -189,6 +197,9 @@ def _record_override(silver_dir: Path, report, reason: str) -> Path:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m trading_os.connectors.tiingo.bars_cli")
     ap.add_argument("--symbols", help="comma-separated tickers (default: all seeded)")
+    ap.add_argument("--historical", action="store_true",
+                    help="resolve tickers ignoring current-date validity (backfill "
+                         "delisted securities whose valid_to is in the past)")
     ap.add_argument("--limit", type=int, default=None,
                     help="cap the number of securities (for a quick pipeline test)")
     ap.add_argument("--swap", action="store_true",
@@ -244,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             requested = all_seeded_symbols(conn, args.limit)
         client = TiingoClient(config)
-        build = build_staging(conn, config, client, requested)
+        build = build_staging(conn, config, client, requested, historical=args.historical)
 
     _print_build_report(build)
 

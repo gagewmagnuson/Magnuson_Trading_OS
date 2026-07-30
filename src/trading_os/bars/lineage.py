@@ -104,6 +104,37 @@ def resolve_security_ids(conn: psycopg.Connection, symbols: list[str]) -> dict[s
             out[s] = r[0]
     return out
 
+
+def resolve_security_ids_any_time(
+    conn: psycopg.Connection, symbols: list[str]
+) -> tuple[dict[str, int], list[str]]:
+    """Map ticker -> security_id IGNORING current-date validity, for HISTORICAL
+    backfill where delisted securities (valid_to in the past) must still resolve.
+    Contrast resolve_security_ids, which resolves as-of current_date and correctly
+    drops delisted names.
+
+    Returns (mapping, ambiguous). A ticker mapping to >1 security over time (reuse)
+    is OMITTED from the mapping and listed in `ambiguous` — never silently
+    collapsed; the caller decides what to do."""
+    rows = conn.execute(
+        """
+        select id_value, array_agg(security_id order by valid_from) as sids
+          from sec.security_identifier
+         where id_type = 'TICKER' and id_value = any(%s)
+         group by id_value
+        """,
+        (symbols,),
+    ).fetchall()
+    out: dict[str, int] = {}
+    ambiguous: list[str] = []
+    for ticker, sids in rows:
+        if len(sids) == 1:
+            out[ticker] = sids[0]
+        else:
+            ambiguous.append(ticker)
+    return out, ambiguous
+
+
 def all_seeded_symbols(conn: psycopg.Connection, limit: int | None = None) -> list[str]:
     """All currently-valid TICKER identifiers in the security master, sorted.
 
