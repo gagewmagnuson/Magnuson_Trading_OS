@@ -48,6 +48,7 @@ from trading_os.bars.silver_store import (
 )
 from trading_os.bars.validation import validate_rebuild
 from trading_os.bars.writer import write_bars_parquet
+from trading_os.bars.dq import record_bar_dq
 from trading_os.config import settings
 
 from .bars import ParseAnomaly, parse_bars
@@ -142,6 +143,21 @@ def build_staging(
             time.sleep(config.request_interval)   # pace under the rate limit
 
         result = write_bars_parquet(all_bars, staging, "TIINGO", batch_id)
+
+        # Persist per-batch DQ summaries (one row per check). batch_size is the
+        # number of bars we attempted to write; anomalies are a share of that.
+        batch_size = len(all_bars)
+        record_bar_dq(
+            conn, "bars_non_session_date", batch_id,
+            anomaly_count=len(result.skipped), batch_size=batch_size,
+            sample=[f"{s.symbol} {s.session_date} {s.reason}" for s in result.skipped],
+        )
+        record_bar_dq(
+            conn, "bars_malformed_row", batch_id,
+            anomaly_count=len(parse_anomalies), batch_size=batch_size,
+            sample=[f"{a.symbol} {a.session_date} {a.reason}" for a in parse_anomalies],
+        )
+
         close_batch(conn, batch_id, "succeeded",
                     rows_in=len(all_bars), rows_out=result.rows_written)
         conn.commit()
