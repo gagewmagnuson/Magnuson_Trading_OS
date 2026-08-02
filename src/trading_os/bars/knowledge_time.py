@@ -31,7 +31,7 @@ primitive never guesses. Strict core, graceful boundary.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 import exchange_calendars as xcals
 
@@ -73,6 +73,31 @@ def market_close_knowledge_time(session_date: date) -> datetime:
     # honors half-day early closes automatically.
     close = _cal.session_close(ts)
     return close.to_pydatetime()
+
+
+def latest_completed_session(as_of: datetime | None = None) -> date:
+    """The most recent XNYS session whose close is at or before `as_of` (default
+    now, UTC). 'Completed' = the session's close has passed, so its EOD bar is
+    available. Used by the incremental job to know how far forward to capture."""
+    now = as_of or datetime.now(timezone.utc)
+    # Walk back from today to the most recent session whose close <= now.
+    d = now.date()
+    for _ in range(10):  # at most a week+ of non-sessions to skip
+        ts = _iso(d)
+        if _cal.is_session(ts) and _cal.session_close(ts) <= now:
+            return d
+        d = d - timedelta(days=1)
+    raise RuntimeError(f"no completed session found on/before {now}")
+
+
+def sessions_between(start: date, end: date) -> list[date]:
+    """All XNYS sessions in [start, end] inclusive, ascending. Empty if start>end
+    or no sessions in range. Deterministic — the canonical list of sessions that
+    should exist, not a heuristic 'gap detection'."""
+    if start > end:
+        return []
+    sessions = _cal.sessions_in_range(_iso(start), _iso(end))
+    return [s.date() for s in sessions]
 
 
 def _iso(session_date: date) -> str:
