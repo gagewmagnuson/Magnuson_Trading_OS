@@ -20,6 +20,7 @@ dependencies = [
     "exchange_calendars==4.13.2", # trading-session source of truth (calendars connector)
     "python-dotenv==1.2.2",       # .env loading in config/settings.py
     "duckdb==1.5.4",              # analytical engine + postgres attach  # CONFIRM: pip show duckdb
+    "polars==1.43.2",             # Gold/analytics feature computation (DEC-028)
     "fastapi==0.139.0",           # V1 read-only serving API (DEC-021 auth; as_of endpoints)
     "uvicorn==0.49.0",            # ASGI server that runs the FastAPI app
 ]
