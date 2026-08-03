@@ -955,3 +955,68 @@ event-time truth; `members_asof_bitemporal` is the explicit audit path. If
 membership is ever captured live (recording S&P announcements as they happen, with
 real-time knowledge_time), those captured rows remain correctly queryable by the
 bitemporal function — the distinction is preserved, not erased.
+
+## DEC-028 — Gold/analytics layer: materialized wide feature tables, published not served
+**Date:** 2026-08
+**Status:** Active
+
+The blueprint (§5, §9) puts a starter analytics set in V1 — returns, realized
+vol, moving averages, momentum, basic breadth — computed as versioned,
+reproducible, PIT-aware features. `meta.feature_definition` already exists for the
+versioning. This DEC decides HOW features are computed, stored, and consumed.
+
+**Decision 1 — Materialize Gold; do not compute-on-read.**
+Features are precomputed and stored as a Gold Parquet layer (`lake/gold/`),
+parallel to Silver. They are NOT computed on demand inside a live Trading OS
+service.
+
+Rationale is architectural, not performance: compute-on-read would make the
+Trading OS an ONLINE dependency of every consumer — the Research OS could not run
+a backtest unless the Trading OS were up. That contradicts the system boundary
+(Research OS blueprint §1: the Trading OS is touched only through read-only
+`as_of` reads / bulk Parquet reads; the two systems "version and fail
+independently"). Materialized Gold keeps the Trading OS a BATCH PUBLISHER and the
+Research OS an offline CONSUMER: the Trading OS wakes on schedule, refreshes
+Silver + Gold, publishes Parquet, sleeps; consumers read Gold directly via DuckDB
+and never call a live service.
+
+**Decision 2 — Wide storage, not long.**
+Gold is one row per (security_id, session_date), with a column per feature
+(return_1d, sma20, realized_vol20, momentum_12_1, ...). Not long/EAV
+(feature_name, value) rows. Rationale: Gold exists to be CONSUMED, and research
+queries want many features for a security across a long range at once — wide is a
+single columnar read into a research-ready frame; long forces a pivot on every
+read. Storage is trivial either way (~200-400MB compressed for the full set), so
+read ergonomics decide. Feature evolution is handled by the registry + new
+columns (sma20 -> sma20_v2 during transition, deprecate v1), NOT by long format —
+definitions change rarely, so this is cheap.
+
+**Decision 3 — PIT propagation via knowledge_time.**
+Every Gold row carries a knowledge_time = the MAX knowledge_time of the inputs it
+consumed (for EOD features, the session's bar knowledge_time). This preserves the
+bitemporal chain: a consumer asking for features as-of D receives only rows whose
+inputs were all knowable by D. Gold inherits the same event_time/knowledge_time
+model as bars — materialization does NOT get to skip PIT discipline. (Compute-on-
+read would have inherited PIT-correctness from the read path for free; materialize
+must propagate it deliberately — this is the central correctness constraint of the
+layer.)
+
+**Decision 4 — Refresh is a stage of the nightly batch pipeline.**
+After the incremental bars capture + DQ, a Gold-refresh stage recomputes the new
+sessions' features (with window-length lookback for rolling features) and appends
+to Gold. Incremental, not full recompute.
+
+**Decision 5 — feature_definition versions definitions; it does not execute them.**
+Each feature is a row in meta.feature_definition (name, version, spec, inputs,
+pit_semantics, code_ref) for documentation, versioning, and lineage. Features are
+concrete functions, not specs interpreted by a generic engine.
+
+**Decision 6 — Scope: a feature PUBLISHER, not a feature ENGINE.**
+V1 builds EXACTLY the blueprint starter set — returns, realized vol, moving
+averages, momentum, basic breadth — and nothing else. No generic transform
+engine, DSL, or plugin framework (that is the §12 infra-as-procrastination
+meta-risk). Correlation matrices, regime metrics, and factor exposures are V2
+(blueprint §9) and are not built now. Delivered in two phases:
+  Phase 1 — single-symbol features (returns, vol, moving averages, momentum).
+  Phase 2 — breadth (cross-sectional; needs universe membership).
+Phase 1 ships before Phase 2.
