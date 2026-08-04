@@ -23,7 +23,7 @@ incremental writer.
 from __future__ import annotations
 
 import argparse
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import duckdb
@@ -71,16 +71,24 @@ def _symbol_for(intervals: list[tuple], d: date) -> str | None:
     return None
 
 
-def run(start: date | None, end: date | None, do_all: bool, dry_run: bool,
-        security_id: int | None = None) -> int:
+def refresh_gold(start: date | None, end: date | None, do_all: bool,
+                 security_id: int | None = None,
+                 emit_months: set[tuple[int, int]] | None = None,
+                 dry_run: bool = False) -> int:
+    """Core Gold refresh: read adjusted bars over [start,end] (or all), compute
+    features, write wide monthly partitions. The single source of truth for Gold
+    computation — every CLI mode funnels here.
+
+    emit_months: if given, only these (year, month) partitions are WRITTEN; rows
+    outside them are still computed (they serve as rolling-feature lookback) but
+    discarded from output. None = write every month present in the data.
+    """
     config = TiingoConfig()
     gold_dir = _gold_dir(config)
-    as_of = date.today()   # reconstruct Gold as-of today's knowledge (best current view)
+    as_of = date.today()
 
     store = DuckDBStore()
     store.connect(attach_postgres=True)
-
-    # Pull adjusted bars over the requested range (or all history).
     lo = None if (do_all or security_id) else start
     hi = None if (do_all or security_id) else end
     sec_filter = [security_id] if security_id else None
@@ -91,20 +99,15 @@ def run(start: date | None, end: date | None, do_all: bool, dry_run: bool,
         print("[gold] no bars in range; nothing to do.")
         return 0
 
-    # bars tuples: (security_id, symbol, session_date, o,h,l,c, volume,
-    #               trade_count, vwap, knowledge_time, source)
-    df = pl.DataFrame(
-        {
-            "security_id": [b[0] for b in bars],
-            "session_date": [b[2] for b in bars],
-            "close": [b[6] for b in bars],
-            "volume": [b[7] for b in bars],
-            "knowledge_time": [b[10] for b in bars],
-        }
-    )
+    df = pl.DataFrame({
+        "security_id": [b[0] for b in bars],
+        "session_date": [b[2] for b in bars],
+        "close": [b[6] for b in bars],
+        "volume": [b[7] for b in bars],
+        "knowledge_time": [b[10] for b in bars],
+    })
     sec_ids = sorted(df["security_id"].unique().to_list())
 
-    # PIT-correct symbols from identifier intervals (reuse-safe).
     with psycopg.connect(settings.pg_conninfo()) as conn:
         intervals = _pit_symbols(conn, sec_ids)
 
@@ -112,11 +115,12 @@ def run(start: date | None, end: date | None, do_all: bool, dry_run: bool,
     print(f"  adjustment (research surface): {RESEARCH_ADJUSTMENT}")
     print(f"  securities: {len(sec_ids)}   bars: {len(bars)}   "
           f"range: {df['session_date'].min()}..{df['session_date'].max()}")
+    if emit_months is not None:
+        print(f"  emit months (only these written): {sorted(emit_months)}")
     if dry_run:
         print("[gold] dry-run — no write.")
         return 0
 
-    # Compute Gold per security, assign PIT symbol, collect.
     all_gold: list[pl.DataFrame] = []
     for sid in sec_ids:
         sec_bars = df.filter(pl.col("security_id") == sid).sort("session_date")
@@ -128,29 +132,50 @@ def run(start: date | None, end: date | None, do_all: bool, dry_run: bool,
         )
         all_gold.append(compute_gold_for_security(sec_bars))
 
-    gold = pl.concat(all_gold).select(GOLD_COLUMNS)
-
-    # Write wide monthly partitions (group by year-month of session_date).
-    gold_dir.mkdir(parents=True, exist_ok=True)
-    gold = gold.with_columns([
+    gold = pl.concat(all_gold).select(GOLD_COLUMNS).with_columns([
         pl.col("session_date").dt.year().alias("_y"),
         pl.col("session_date").dt.month().alias("_m"),
     ])
+
+    gold_dir.mkdir(parents=True, exist_ok=True)
     written = 0
+    months_written = 0
     for (y, m), part in gold.group_by(["_y", "_m"]):
+        if emit_months is not None and (y, m) not in emit_months:
+            continue   # computed as lookback, not emitted
         part = part.drop(["_y", "_m"])
         out_file = _month_file(gold_dir, y, m)
         tmp = out_file.with_suffix(".parquet.tmp")
-        # Full rewrite of the month (idempotent — Gold is derived, so a month's
-        # features are fully recomputable; last write wins).
         part.sort(["security_id", "session_date"]).write_parquet(tmp)
         tmp.replace(out_file)
         written += part.height
+        months_written += 1
         print(f"[gold] wrote {out_file.name}: {part.height} rows")
 
-    print(f"\n[gold] done. {written} gold rows across "
-          f"{gold.select(['_y','_m']).unique().height} month partitions.")
+    print(f"\n[gold] done. {written} rows across {months_written} month partitions.")
     return 0
+
+
+def _nightly_plan(today: date) -> tuple[date, set[tuple[int, int]]]:
+    """Compute (lookback_start, emit_months) for the nightly refresh: the current
+    month always, plus the previous month during the first days of a new month
+    (self-healing window for late corrections). Lookback = 252 sessions before the
+    earliest emit month's start, so rolling features warm up correctly."""
+    from trading_os.bars.knowledge_time import sessions_between
+    cur = (today.year, today.month)
+    emit = {cur}
+    earliest_month_start = date(today.year, today.month, 1)
+    if today.day <= 5:
+        prev_start = (earliest_month_start - timedelta(days=1)).replace(day=1)
+        emit.add((prev_start.year, prev_start.month))
+        earliest_month_start = prev_start
+    # 252 sessions before earliest_month_start: reach back ~400 calendar days,
+    # take the last 252 sessions, use the earliest as lookback_start.
+    candidates = sessions_between(earliest_month_start - timedelta(days=400),
+                                  earliest_month_start)
+    lookback_start = candidates[-252] if len(candidates) >= 252 else (
+        candidates[0] if candidates else earliest_month_start)
+    return lookback_start, emit
 
 
 def main(argv=None) -> int:
@@ -158,13 +183,21 @@ def main(argv=None) -> int:
     ap.add_argument("--start", type=date.fromisoformat)
     ap.add_argument("--end", type=date.fromisoformat)
     ap.add_argument("--all", action="store_true", help="rebuild all history")
-    ap.add_argument("--security-id", type=int, default=None,
-                    help="restrict to one security_id (full history; for testing)")
+    ap.add_argument("--nightly", action="store_true",
+                    help="refresh open partitions (current month, prev month early "
+                         "in a new month) with 252-session lookback")
+    ap.add_argument("--security-id", type=int, default=None)
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
+
+    if args.nightly:
+        lookback_start, emit = _nightly_plan(date.today())
+        return refresh_gold(start=lookback_start, end=date.today(), do_all=False,
+                            emit_months=emit, dry_run=args.dry_run)
     if not args.all and not args.security_id and not (args.start and args.end):
-        ap.error("provide --all, --security-id, or both --start and --end")
-    return run(args.start, args.end, args.all, args.dry_run, args.security_id)
+        ap.error("provide --all, --nightly, --security-id, or both --start and --end")
+    return refresh_gold(args.start, args.end, args.all, args.security_id,
+                        emit_months=None, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
