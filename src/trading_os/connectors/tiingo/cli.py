@@ -95,8 +95,9 @@ def run(conn, config: TiingoConfig, client: TiingoClient, requested: list[str],
                 stats.warnings.extend(res.warnings)
                 conn.commit()                    # per-symbol commit -> resumable
                 stats.symbols_processed += 1
-                print(f"  {sym}: inserted {res.inserted}, skipped {res.skipped_exact}, "
-                      f"conflicts {res.conflicts}")
+                if res.inserted or res.conflicts:
+                    print(f"  {sym}: inserted {res.inserted}, skipped {res.skipped_exact}, "
+                          f"conflicts {res.conflicts}")
             except Exception as e:               # noqa: BLE001 (one symbol must not kill the run)
                 conn.rollback()
                 stats.symbols_failed += 1
