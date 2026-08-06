@@ -32,6 +32,7 @@ import psycopg
 from trading_os.config import settings
 
 from .actions import derive_actions
+from .symbols import to_tiingo_symbol
 from .client import TiingoClient
 from .config import HISTORY_START, INCREMENTAL_WINDOW_DAYS, TiingoConfig
 from .writer import ActionsWriter, BatchStats
@@ -77,7 +78,7 @@ def run(conn, config: TiingoConfig, client: TiingoClient, requested: list[str],
     try:
         for sym, sid in sec_map.items():
             try:
-                rows = client.fetch_daily(sym, start)
+                rows = client.fetch_daily(to_tiingo_symbol(sym), start)
                 stats.api_calls += 1
                 actions, warns = derive_actions(sid, rows)
                 stats.warnings.extend(f"{sym}: {w}" for w in warns)
