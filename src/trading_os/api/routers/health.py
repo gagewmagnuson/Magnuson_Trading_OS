@@ -61,7 +61,7 @@ def _sources(conn) -> list[SourceHealth]:
     a pipeline that stopped running still appears (stale/never-run)."""
     rows = conn.execute(
         """
-        select ds.name, p.dataset, ds.kind, p.cadence, p.retired, p.critical,
+        select ds.name, p.dataset, p.kind, p.cadence, p.retired, p.critical,
                (select max(b.finished_at) from meta.ingest_batch b
                  where b.source_id = p.source_id and b.dataset = p.dataset
                    and b.status = 'succeeded'),
