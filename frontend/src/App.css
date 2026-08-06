@@ -1,0 +1,33 @@
+:root { color-scheme: dark; }
+body { margin: 0; background: #0d1117; color: #c9d1d9;
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.console { padding: 16px; max-width: 1100px; margin: 0 auto; }
+.banner { display: flex; justify-content: space-between; align-items: center;
+  border-bottom: 1px solid #30363d; padding-bottom: 10px; margin-bottom: 16px; }
+.title { font-size: 16px; font-weight: 600; color: #e6edf3; }
+.meta { margin-left: 12px; color: #8b949e; font-size: 12px; }
+.refresh { color: #8b949e; font-size: 12px; }
+.refresh button { margin-left: 8px; background: #21262d; color: #c9d1d9;
+  border: 1px solid #30363d; border-radius: 4px; padding: 2px 8px; cursor: pointer; }
+section { margin-bottom: 24px; }
+h3 { color: #e6edf3; font-size: 13px; text-transform: uppercase; letter-spacing: .5px;
+  border-bottom: 1px solid #21262d; padding-bottom: 4px; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; color: #8b949e; font-weight: 500; padding: 4px 8px; font-size: 12px; }
+td { padding: 4px 8px; border-top: 1px solid #161b22; }
+tr:hover td { background: #161b22; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.dot.ok { background: #3fb950; } .dot.warn { background: #d29922; }
+.dot.stale { background: #f85149; } .dot.unknown { background: #6e7681; }
+.bad { color: #f85149; }
+.alert { padding: 8px 12px; border-radius: 6px; margin-bottom: 16px; }
+.alert.error { background: #3d1418; border: 1px solid #f85149; color: #ff7b72; }
+.alert.warn { background: #341a00; border: 1px solid #d29922; color: #e3b341; }
+.key-prompt { max-width: 360px; margin: 100px auto; text-align: center; }
+.key-prompt input { width: 100%; padding: 8px; margin: 12px 0; background: #0d1117;
+  border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; box-sizing: border-box; }
+.key-prompt button { padding: 8px 24px; background: #238636; color: white;
+  border: none; border-radius: 6px; cursor: pointer; }
+.dot.retired { background: #6e7681; }
+.retired-row td { opacity: 0.5; }
+.crit { color: #d29922; margin-left: 4px; font-weight: bold; }

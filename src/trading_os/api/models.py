@@ -181,3 +181,82 @@ class MacroResponse(BaseModel):
     end: date | None = Field(default=None, description="Inclusive obs_date upper bound, if given.")
     count: int = Field(description="Number of observations returned.")
     observations: list[MacroObservation]
+
+
+# ---------------------------------------------------------------------------
+# Health + Catalog contract (V1 operational metadata surface).
+#
+# FROZEN CONTRACT: field names and semantics are STABLE. Future changes may only
+# ADD optional fields or new endpoints — never rename or repurpose existing
+# fields. Consumers (UI, Research OS, monitors, agents) depend on this shape.
+#
+# Freshness is reported as FACTS (last_capture, latest_event, expected_frequency,
+# lag), never as an opinion ("stale"). Each consumer applies its own thresholds.
+# ---------------------------------------------------------------------------
+
+class PingResponse(BaseModel):
+    status: str
+    server_time: datetime
+    version: str
+    git_sha: str | None
+    db_connected: bool
+
+
+class SourceHealth(BaseModel):
+    name: str                       # ref.data_source.name, e.g. 'FRED'
+    dataset: str                    # the pipeline's dataset, e.g. 'bars_eod'
+    kind: str                       # 'prices' | 'macro' | 'fundamentals' | 'reference'
+    last_batch_at: datetime | None  # most recent succeeded ingest_batch for this pipeline
+    last_status: str | None         # status of the most recent batch
+    expected_frequency: str         # cadence (a fact)
+    lag_seconds: int | None         # now - last_batch_at (fact; consumer judges)
+    retired: bool                   # pipeline permanently decommissioned
+    critical: bool                  # failure threatens downstream correctness
+
+
+class JobRun(BaseModel):
+    batch_id: int
+    dataset: str
+    source_id: int
+    status: str
+    started_at: datetime
+    finished_at: datetime | None
+    rows_in: int | None
+    rows_out: int | None
+    code_version: str | None
+    error: str | None
+
+
+class DQResultItem(BaseModel):
+    result_id: int
+    check_name: str
+    batch_id: int | None
+    run_at: datetime
+    passed: bool
+    severity: str | None            # from observed->>'severity'
+    count: int | None               # from observed->>'count'
+    details: str | None
+
+
+class HealthSummary(BaseModel):
+    generated_at: datetime
+    sources: list[SourceHealth]
+    recent_jobs: list[JobRun]       # last N batches
+    recent_failures: list[JobRun]   # batches with status='failed'
+    recent_dq_failures: list[DQResultItem]  # dq_result where passed=false
+
+
+class FeatureDefinitionItem(BaseModel):
+    name: str
+    version: int
+    description: str | None
+    spec: dict | None
+    inputs: list[str] | None
+    pit_semantics: str | None
+    code_ref: str | None
+
+
+class DatasetItem(BaseModel):
+    name: str                       # 'bars' | 'gold' | 'macro' | 'fundamentals' | 'universe'
+    description: str
+    storage: str                    # 'parquet_lake' | 'postgres'

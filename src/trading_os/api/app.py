@@ -24,7 +24,9 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 
 from trading_os.api.deps import Consumer, require_consumer
-from trading_os.api.routers import bars, fundamentals, macro
+from trading_os.api.routers import bars, catalog, fundamentals, health, macro
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(
     title="Magnuson Trading OS — Serving API",
@@ -36,6 +38,8 @@ app = FastAPI(
 app.include_router(bars.router)
 app.include_router(fundamentals.router)
 app.include_router(macro.router)
+app.include_router(health.router)
+app.include_router(catalog.router)
 
 @app.get("/v1/health", tags=["ops"])
 def health() -> dict[str, str]:
@@ -57,3 +61,10 @@ def whoami(consumer: Consumer = Depends(require_consumer)) -> dict[str, object]:
     unreachable without a valid key.
     """
     return {"consumer_id": consumer.consumer_id, "label": consumer.label}
+
+# Serve the built React health console at /ui (production: one server, one origin).
+# The frontend build (npm run build) emits to frontend/dist. If it doesn't exist
+# (dev without a build), skip mounting so the API still runs.
+_ui_dist = Path(__file__).resolve().parents[3] / "frontend" / "dist"
+if _ui_dist.is_dir():
+    app.mount("/ui", StaticFiles(directory=str(_ui_dist), html=True), name="ui")
