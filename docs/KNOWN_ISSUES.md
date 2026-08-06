@@ -77,3 +77,31 @@ KI-001.
 ~6M+ rows). All understood, quantified, and non-corrupting — Gold surfaces the
 upstream inconsistency honestly rather than hiding it. None affect feature values or
 `security_id` correctness.
+
+
+---
+
+## KI-004 — Promote internal workflows to first-class health pipelines
+
+**Status:** Deferred enhancement (V1 ships without it).
+
+The Health UI reports **vendor ingestion** pipelines (Tiingo bars, FRED, EDGAR,
+universe) because those write structured `meta.ingest_batch` rows the health API
+queries for freshness. Internal workflows — **Gold refresh**, DQ runs, registry
+refresh — currently log to `incremental.log` (human-readable text) but do NOT emit
+structured `ingest_batch` metadata, so they can't participate in the freshness
+model and don't appear as pipelines in the console.
+
+**Impact:** if an internal job (e.g. Gold refresh) fails, the launchd wrapper exits
+non-zero and the failure is in `incremental.log` — investigable, but not visible in
+the Health UI. Adequate for an attended development platform; insufficient for
+long-run unattended operation.
+
+**The enhancement (a cohesive later piece):**
+- Gold refresh emits `ingest_batch` metadata.
+- DQ runs emit `ingest_batch` metadata.
+- Registry/universe refresh emit `ingest_batch` metadata.
+- Health UI reports vendor and internal pipelines uniformly (via `meta.pipeline_definition`).
+
+Deferred as operational maturity (alerts, dependency graphs, retry status belong
+here too) — a clean follow-on after the Research OS, not a V1 blocker.
