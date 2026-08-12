@@ -41,3 +41,11 @@ class EngineConfig:
         # engine reads it vendor-agnostically. Unlike macro_silver_dir this is a
         # real system-of-record dataset, not a derived proof artifact.
         return self.lake_root / "silver" / "bars_eod"
+
+    @property
+    def gold_features_dir(self) -> Path:
+        # Authoritative gold: PIT-correct derived features (adj prices + the
+        # feature set), one row per (security_id, session_date, knowledge_time).
+        # Read-only serving surface; features are computed by the gold refresh,
+        # never here.
+        return self.lake_root / "gold" / "features_eod"

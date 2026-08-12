@@ -24,7 +24,7 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI
 
 from trading_os.api.deps import Consumer, require_consumer
-from trading_os.api.routers import bars, catalog, fundamentals, health, macro
+from trading_os.api.routers import bars, catalog, fundamentals, gold, health, macro
 from pathlib import Path
 from fastapi.staticfiles import StaticFiles
 
@@ -36,6 +36,7 @@ app = FastAPI(
 )
 
 app.include_router(bars.router)
+app.include_router(gold.router)
 app.include_router(fundamentals.router)
 app.include_router(macro.router)
 app.include_router(health.router)

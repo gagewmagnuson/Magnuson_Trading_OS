@@ -260,3 +260,44 @@ class DatasetItem(BaseModel):
     name: str                       # 'bars' | 'gold' | 'macro' | 'fundamentals' | 'universe'
     description: str
     storage: str                    # 'parquet_lake' | 'postgres'
+
+
+class GoldFeatureRow(BaseModel):
+    """One gold feature row, data-only. Identity (symbol/security_id) is on the
+    envelope. Values are the PIT-correct derived features as known by `as_of`."""
+    session_date: date = Field(description="Exchange session the features cover.")
+    adj_close: float = Field(description="Split+dividend adjusted close the features were computed from.")
+    adj_volume: int
+    return_1d: float | None = Field(default=None, description="One-session simple return.")
+    log_return_1d: float | None = Field(default=None, description="One-session log return.")
+    sma20: float | None = Field(default=None, description="20-session simple moving average of adj_close.")
+    sma50: float | None = Field(default=None, description="50-session simple moving average of adj_close.")
+    ema20: float | None = Field(default=None, description="20-span EMA of adj_close.")
+    realized_vol20: float | None = Field(default=None, description="20-session realized volatility.")
+    roc20: float | None = Field(default=None, description="20-session rate of change.")
+    momentum_12_1: float | None = Field(default=None, description="12-1 momentum (skip most recent month).")
+    knowledge_time: datetime = Field(
+        description="When this feature row first became knowable. Every returned row "
+                    "satisfies knowledge_time <= as_of — the PIT guarantee."
+    )
+
+
+class GoldFeaturesResponse(BaseModel):
+    """Envelope for GET /v1/features. Rows ascending by (security_id, session_date).
+    Features are computed by the gold refresh; this endpoint only reads them PIT."""
+    as_of: date = Field(
+        description="Knowledge cutoff. Every returned row was knowable by this date. "
+                    "Omit for latest known; pin for reproducible queries."
+    )
+    start: date | None = Field(default=None, description="Inclusive session_date lower bound, if given.")
+    end: date | None = Field(default=None, description="Inclusive session_date upper bound, if given.")
+    symbols: list[str] | None = Field(default=None, description="Resolved symbols filtered to, if given.")
+    unresolved: list[str] = Field(
+        default_factory=list,
+        description="Requested symbols that did not resolve to a security as of the "
+                    "cutoff. Never silently dropped: the caller sees exactly what was "
+                    "not found and decides whether the result is complete. Empty when "
+                    "all requested symbols resolved or no symbols were requested.",
+    )
+    count: int = Field(description="Number of rows returned.")
+    rows: list[GoldFeatureRow]

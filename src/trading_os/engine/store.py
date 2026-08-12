@@ -242,6 +242,53 @@ class DuckDBStore:
         """
         return self.con.execute(sql, args).fetchall()
 
+    # ---- point-in-time read: gold features (PIT, pure Parquet) ----
+    def gold_features_asof(self, as_of, security_ids=None, start=None, end=None):
+        """
+        Gold features as KNOWN on `as_of`, from the gold Parquet lake: for each
+        (security_id, session_date), the row with the latest knowledge_time
+        <= as_of. No lookahead; a recomputed feature vintage appears only from
+        its knowledge_time onward. Mirrors _bars_eod_asof_raw's PIT discipline
+        (DEC-004 semantics), applied to the derived feature set.
+
+        Features are computed by the gold refresh, never here — this is a
+        read-only serving path. Pure Parquet; no Postgres attach required.
+
+        Returns rows:
+            (security_id, symbol, session_date, knowledge_time,
+             adj_close, adj_volume, return_1d, log_return_1d,
+             sma20, sma50, ema20, realized_vol20, roc20, momentum_12_1)
+        """
+        assert self.con is not None, "call connect() first"
+        import glob as _glob
+        if not _glob.glob(self._gold_glob()):
+            return []
+
+        where = ["knowledge_time <= ?"]
+        args: list = [self._as_of_ts(as_of)]
+        if security_ids:
+            where.append(f"security_id in ({','.join('?' for _ in security_ids)})")
+            args.extend(security_ids)
+        if start is not None:
+            where.append("session_date >= ?"); args.append(start)
+        if end is not None:
+            where.append("session_date <= ?"); args.append(end)
+
+        sql = f"""
+            SELECT security_id, symbol, session_date, knowledge_time,
+                   adj_close, adj_volume, return_1d, log_return_1d,
+                   sma20, sma50, ema20, realized_vol20, roc20, momentum_12_1
+            FROM (
+                SELECT *,
+                       row_number() OVER (PARTITION BY security_id, session_date
+                                          ORDER BY knowledge_time DESC) AS rn
+                FROM read_parquet('{self._gold_glob()}')
+                WHERE {" AND ".join(where)}
+            ) WHERE rn = 1
+            ORDER BY security_id, session_date
+        """
+        return self.con.execute(sql, args).fetchall()
+
     def _fetch_actions(self, security_ids, as_of):
         """PIT-filtered corporate actions for `security_ids` (ex_date <= as_of
         AND knowledge_time <= as_of), read through the Postgres attach. Returns
@@ -317,3 +364,6 @@ class DuckDBStore:
         
     def _bars_glob(self) -> str:
         return (self.config.bars_eod_dir / "*.parquet").as_posix()
+
+    def _gold_glob(self) -> str:
+        return (self.config.gold_features_dir / "*.parquet").as_posix()
