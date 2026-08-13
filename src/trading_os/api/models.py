@@ -301,3 +301,28 @@ class GoldFeaturesResponse(BaseModel):
     )
     count: int = Field(description="Number of rows returned.")
     rows: list[GoldFeatureRow]
+
+
+class UniverseMemberRow(BaseModel):
+    """One universe member as of the query date, data-only. Event-time semantics
+    (DEC-027): membership is 'who was in the index on as_of', by valid_from/valid_to
+    containment — NOT knowledge_time gated, because reconstructed membership has
+    load-time knowledge_time."""
+    security_id: int = Field(description="Stable internal security id (the safe join key).")
+    symbol: str | None = Field(
+        default=None,
+        description="Ticker valid on the as_of date (PIT-resolved). Null if no ticker "
+                    "interval covers the date.",
+    )
+
+
+class UniverseResponse(BaseModel):
+    """Envelope for GET /v1/universe/{index}. Members as of `as_of`, event-time
+    (DEC-027). Ascending by security_id."""
+    index: str = Field(description="Universe code, e.g. 'SP500' (matches univ.universe.code).")
+    as_of: date = Field(
+        description="Membership date. Returns who was in the index on this date "
+                    "(event-time containment). Omit for latest; pin for reproducibility."
+    )
+    count: int = Field(description="Number of members returned.")
+    members: list[UniverseMemberRow]
