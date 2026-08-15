@@ -88,15 +88,16 @@ def test_history_has_multiple_intervals_for_some_securities(client, api_key):
 
 
 def test_intervals_have_identity_and_event_time(client, api_key):
-    """Each interval carries security_id (identity) and valid_from; valid_to may be
-    null (open). There is NO ticker — identity is the stable id, not a symbol."""
+    """Each interval carries security_id (the identity) + valid_from; valid_to may
+    be null. ticker is present as a PIT transport convenience (for calling the
+    symbol-keyed bars/features endpoints), NOT identity — R1 keys on security_id."""
     hist = _history(client, api_key)
     iv = hist["intervals"][0]
     assert "security_id" in iv and "valid_from" in iv
-    assert "valid_to" in iv                 # present, may be null
-    assert "ticker" not in iv and "symbol" not in iv   # identity is security_id, not a symbol
-    # at least one open (current) interval exists
-    assert any(x["valid_to"] is None for x in hist["intervals"])
+    assert "valid_to" in iv                      # present, may be null
+    assert "ticker" in iv                        # transport convenience, present
+    assert isinstance(iv["security_id"], int)    # security_id is the identity
+    assert any(x["valid_to"] is None for x in hist["intervals"])   # an open interval exists
 
 
 def test_reproducible(client, api_key):

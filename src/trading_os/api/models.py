@@ -330,11 +330,14 @@ class UniverseResponse(BaseModel):
 
 class MembershipInterval(BaseModel):
     """One membership interval, event-time. Identity is security_id (the stable
-    key); the membership table carries NO ticker — ticker is a separate PIT
-    attribute, never the identity. valid_to is null for a currently-open interval."""
-    security_id: int = Field(description="Stable security id — the identity for R1 to key on.")
+    key). ticker is the symbol valid at valid_from — a TRANSPORT CONVENIENCE for
+    calling symbol-keyed endpoints (bars/features), never the identity. Resolved
+    PIT at the interval so a future reused ticker resolves correctly per interval;
+    the consumer still keys on security_id and verifies identity on fetch."""
+    security_id: int = Field(description="Stable security id — the identity R1 keys on.")
     valid_from: date = Field(description="Event-time interval start (inclusive).")
     valid_to: date | None = Field(default=None, description="Event-time interval end (exclusive); null if open/current.")
+    ticker: str | None = Field(default=None, description="Symbol valid at valid_from; for symbol-keyed data fetches, not identity.")
 
 
 class UniverseHistoryResponse(BaseModel):

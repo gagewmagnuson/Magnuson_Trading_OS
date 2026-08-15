@@ -116,7 +116,15 @@ def get_universe_history(
     # delisted securities. Ordered for determinism.
     rows = conn.execute(
         """
-        select m.security_id, m.valid_from, m.valid_to
+        select m.security_id, m.valid_from, m.valid_to,
+               (select si.id_value
+                  from sec.security_identifier si
+                 where si.security_id = m.security_id
+                   and si.id_type = 'TICKER'
+                   and si.valid_from <= m.valid_from
+                   and (si.valid_to is null or si.valid_to > m.valid_from)
+                 order by si.valid_from desc
+                 limit 1) as ticker
           from univ.universe_membership m
           join univ.universe u on u.universe_id = m.universe_id
          where u.code = %(code)s
@@ -126,7 +134,8 @@ def get_universe_history(
         {"code": index, "as_of": effective_as_of},
     ).fetchall()
 
-    intervals = [MembershipInterval(security_id=r[0], valid_from=r[1], valid_to=r[2])
+    intervals = [MembershipInterval(security_id=r[0], valid_from=r[1],
+                                    valid_to=r[2], ticker=r[3])
                  for r in rows]
     return UniverseHistoryResponse(
         index=index, as_of=effective_as_of,
