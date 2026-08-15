@@ -326,3 +326,29 @@ class UniverseResponse(BaseModel):
     )
     count: int = Field(description="Number of members returned.")
     members: list[UniverseMemberRow]
+
+
+class MembershipInterval(BaseModel):
+    """One membership interval, event-time. Identity is security_id (the stable
+    key); the membership table carries NO ticker — ticker is a separate PIT
+    attribute, never the identity. valid_to is null for a currently-open interval."""
+    security_id: int = Field(description="Stable security id — the identity for R1 to key on.")
+    valid_from: date = Field(description="Event-time interval start (inclusive).")
+    valid_to: date | None = Field(default=None, description="Event-time interval end (exclusive); null if open/current.")
+
+
+class UniverseHistoryResponse(BaseModel):
+    """Envelope for GET /v1/universe/{index}/history — the COMPLETE membership
+    interval history (survivorship-free: includes securities long delisted). A
+    security may appear in multiple intervals (left and re-entered). Consumers
+    reconstruct PIT membership at any date by interval containment, locally."""
+    index: str
+    as_of: date = Field(
+        description="Knowledge cutoff (knowledge_time <= as_of). Currently a no-op: "
+                    "membership knowledge_time is uniform load-time (DEC-027), so the "
+                    "filter excludes nothing today. Accepted and applied for bitemporal "
+                    "correctness if membership gains real knowledge-time later."
+    )
+    interval_count: int = Field(description="Number of membership intervals returned.")
+    security_count: int = Field(description="Number of DISTINCT securities across those intervals.")
+    intervals: list[MembershipInterval]

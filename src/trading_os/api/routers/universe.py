@@ -21,7 +21,9 @@ import psycopg
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from trading_os.api.deps import Consumer, get_conn, require_consumer
-from trading_os.api.models import UniverseMemberRow, UniverseResponse
+from trading_os.api.models import (
+    UniverseMemberRow, UniverseResponse, MembershipInterval, UniverseHistoryResponse,
+)
 
 router = APIRouter(tags=["universe"])
 
@@ -73,4 +75,62 @@ def get_universe(
     members = [UniverseMemberRow(security_id=r[0], symbol=r[1]) for r in rows]
     return UniverseResponse(
         index=index, as_of=effective_as_of, count=len(members), members=members,
+    )
+
+
+@router.get("/v1/universe/{index}/history", response_model=UniverseHistoryResponse)
+def get_universe_history(
+    index: str,
+    as_of: date | None = Query(
+        default=None,
+        description="Knowledge cutoff (knowledge_time <= as_of). Currently a no-op "
+                    "(membership knowledge_time is uniform load-time, DEC-027); accepted "
+                    "for bitemporal correctness. Omit for all knowable intervals.",
+    ),
+    consumer: Consumer = Depends(require_consumer),
+    conn: psycopg.Connection = Depends(get_conn),
+) -> UniverseHistoryResponse:
+    """The COMPLETE membership interval history for an index — survivorship-free.
+
+    Returns every (security_id, valid_from, valid_to) interval ever recorded for
+    the index, including securities long delisted and securities with multiple
+    intervals. This is the population source for a self-contained research
+    snapshot: the consumer ingests every security appearing here and reconstructs
+    PIT membership locally by interval containment. Event-time intervals; the
+    optional as_of is a knowledge_time filter (currently a no-op per DEC-027).
+    """
+    effective_as_of = as_of or datetime.now(timezone.utc).date()
+
+    exists = conn.execute(
+        "select 1 from univ.universe where code = %s", [index]
+    ).fetchone()
+    if exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"universe '{index}' not found.",
+        )
+
+    # All membership intervals for the index, knowledge_time-gated (no-op today,
+    # DEC-027). Event-time (valid_from/valid_to) is preserved verbatim — NOT
+    # filtered by as_of, because the whole point is the full history including
+    # delisted securities. Ordered for determinism.
+    rows = conn.execute(
+        """
+        select m.security_id, m.valid_from, m.valid_to
+          from univ.universe_membership m
+          join univ.universe u on u.universe_id = m.universe_id
+         where u.code = %(code)s
+           and m.knowledge_time <= %(as_of)s
+         order by m.security_id, m.valid_from
+        """,
+        {"code": index, "as_of": effective_as_of},
+    ).fetchall()
+
+    intervals = [MembershipInterval(security_id=r[0], valid_from=r[1], valid_to=r[2])
+                 for r in rows]
+    return UniverseHistoryResponse(
+        index=index, as_of=effective_as_of,
+        interval_count=len(intervals),
+        security_count=len({iv.security_id for iv in intervals}),
+        intervals=intervals,
     )
