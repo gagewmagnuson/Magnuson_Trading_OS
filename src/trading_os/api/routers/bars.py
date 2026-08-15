@@ -95,3 +95,71 @@ def get_bars(
         count=len(bars),
         bars=bars,
     )
+
+
+@router.get("/v1/bars/by-id/{security_id}", response_model=BarsResponse)
+def get_bars_by_id(
+    security_id: int,
+    as_of: date | None = Query(
+        default=None,
+        description="Knowledge cutoff (end-of-day UTC). Omit for latest known; "
+                    "pin for reproducible queries.",
+    ),
+    start: date | None = Query(default=None, description="Inclusive session_date lower bound."),
+    end: date | None = Query(default=None, description="Inclusive session_date upper bound."),
+    adjustment: Adjustment = Query(default=Adjustment.none, description="On-read price adjustment."),
+    consumer: Consumer = Depends(require_consumer),
+    conn: psycopg.Connection = Depends(get_conn),
+    store: DuckDBStore = Depends(get_store),
+) -> BarsResponse:
+    """Fetch bars by STABLE security_id — the identity path. Unlike the symbol
+    route, this does NOT resolve a ticker, so it retrieves DELISTED securities at
+    a current knowledge cutoff (whose historical ticker is no longer valid) and is
+    immune to ticker reuse. This is the path a survivorship-free snapshot uses.
+    Downstream read/adjust/serialize is identical to the symbol route."""
+    if start is not None and end is not None and start > end:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="start must be <= end.",
+        )
+    effective_as_of = as_of or datetime.now(timezone.utc).date()
+
+    # Verify the security exists (independent of any ticker validity).
+    exists = conn.execute(
+        "SELECT 1 FROM sec.security WHERE security_id = %s", [security_id]
+    ).fetchone()
+    if exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"security_id {security_id} not found.",
+        )
+
+    # A representative symbol for the response envelope: the most recent ticker
+    # this security ever had (PIT display only; identity is security_id). May be
+    # null for a security that never had a ticker.
+    sym_row = conn.execute(
+        """SELECT id_value FROM sec.security_identifier
+            WHERE security_id = %s AND id_type = 'TICKER'
+            ORDER BY valid_from DESC LIMIT 1""",
+        [security_id],
+    ).fetchone()
+    display_symbol = sym_row[0] if sym_row else None
+
+    store.connect(attach_postgres=(adjustment != Adjustment.none))
+    adj_arg = None if adjustment == Adjustment.none else adjustment.value
+    rows = store.bars_eod_asof(
+        effective_as_of, security_ids=[security_id],
+        start=start, end=end, adjustment=adj_arg,
+    )
+    bars = [
+        BarRow(
+            session_date=r[2], open=r[3], high=r[4], low=r[5], close=r[6],
+            volume=r[7], trade_count=r[8], vwap=r[9],
+            knowledge_time=r[10], source=r[11],
+        )
+        for r in rows
+    ]
+    return BarsResponse(
+        symbol=display_symbol, security_id=security_id, as_of=effective_as_of,
+        adjustment=adjustment, start=start, end=end, count=len(bars), bars=bars,
+    )
